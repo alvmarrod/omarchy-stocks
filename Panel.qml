@@ -1,0 +1,1518 @@
+import QtQuick
+import QtQuick.Controls
+import Quickshell
+import Quickshell.Io
+import qs.Commons
+import qs.Ui
+import "Model.js" as Model
+import "Store.js" as Store
+import "Search.js" as Search
+
+// Stocks app: a two-pane popup. The sidebar owns search + watchlists, the
+// detail pane shows the selected ticker. This file also owns the quote state
+// so the compact bar widget can read the selected quote while closed.
+Panel {
+  id: root
+  moduleName: "io.github.alvmarrod.stocks"
+  manageIpc: false
+
+  property var anchorItem: null
+  property var hostWidget: null
+  readonly property var barIdentity: hostWidget || root
+
+  // ---- Persistent state ---------------------------------------------------
+  readonly property string home: Quickshell.env("HOME") || ""
+  readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state") + "/omarchy/stocks"
+  readonly property string statePath: stateDir + "/state.json"
+  property bool storeReady: false
+  property bool stateLoaded: false
+  property var store: Store.emptyState()
+
+  readonly property var activeList: Store.activeWatchlist(store)
+  readonly property var symbols: Store.activeSymbols(store)
+  readonly property string symbolsKey: symbols.join(",")
+  readonly property string selectedSymbol: String(store.selectedSymbol || "")
+  readonly property string activeRange: Store.normalizeRange(store.chartRange)
+  readonly property string displayCurrency: Store.normalizeCurrency(store.currency)
+
+  // ---- Quotes, chart and FX ----------------------------------------------
+  property var quotes: []
+  property var chartSeries: ({})
+  property string chartSeriesRange: ""
+  property string chartRequestedSymbol: ""
+  property string chartRequestedRange: ""
+  property bool chartLoading: false
+  property var rates: ({})
+  property var ratesRequested: []
+  property int ratesRetries: 0
+  property string fetchError: ""
+  property double lastUpdated: 0
+  property int retries: 0
+
+  readonly property string userAgent: "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.0.0"
+  readonly property bool loading: quotes.length === 0 && fetchError === ""
+  readonly property var shownQuotes: Model.convertAll(quotes, displayCurrency, rates)
+
+  function quoteFor(symbol) {
+    var list = root.shownQuotes
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].symbol) === symbol) return list[i]
+    }
+    return null
+  }
+
+  readonly property var selectedQuote: root.selectedSymbol !== "" ? root.quoteFor(root.selectedSymbol) : null
+  readonly property var detailQuote: root.selectedQuote
+    ? root.selectedQuote
+    : Model.emptyQuote(root.selectedSymbol)
+  readonly property var detailSeries: root.seriesFor(root.selectedQuote)
+
+  // Sidebar rows exist as soon as a symbol is added; quotes fill in after.
+  readonly property var listRows: {
+    var bySymbol = {}
+    var list = root.shownQuotes
+    for (var i = 0; i < list.length; i++) bySymbol[list[i].symbol] = list[i]
+    var out = []
+    for (var j = 0; j < root.symbols.length; j++) {
+      out.push(bySymbol[root.symbols[j]] || Model.emptyQuote(root.symbols[j]))
+    }
+    return out
+  }
+
+  // The panel only needs to be as tall as its tallest pane. The detail pane is
+  // effectively fixed once a ticker is selected; the sidebar grows with the
+  // watchlist and scrolls past the cap. 320 keeps an empty app panel-sized.
+  readonly property real sidebarRequiredHeight: Style.space(20)
+    + searchField.height + Style.space(10)
+    + sideHeader.implicitHeight + Style.space(6)
+    + tickerColumn.implicitHeight
+  readonly property real detailRequiredHeight: Style.space(28)
+    + (root.selectedSymbol === "" ? emptyDetail.implicitHeight : detailColumn.implicitHeight)
+  readonly property real panelContentHeight: Math.max(Style.space(320),
+    root.sidebarRequiredHeight, root.detailRequiredHeight)
+
+  // ---- Bar widget contract ------------------------------------------------
+  readonly property var barQuote: root.selectedQuote
+  readonly property bool barDown: Model.isDown(root.barQuote)
+  readonly property bool barUp: Model.isUp(root.barQuote)
+  readonly property string barSymbol: root.selectedSymbol !== "" ? root.selectedSymbol : "Stocks"
+  readonly property string barPrice: Model.isValid(root.barQuote) ? Model.formatPrice(root.barQuote.price) : ""
+  readonly property string barChange: {
+    if (!Model.isValid(root.barQuote)) return ""
+    var pct = Model.formatPercent(root.barQuote.changePct)
+    return pct ? Model.arrowFor(root.barQuote.change) + pct : ""
+  }
+
+  // ---- Presentation helpers ----------------------------------------------
+  readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+  readonly property color mutedForeground: Qt.darker(barForeground, 1.5)
+  readonly property color urgentForeground: bar ? bar.urgent : Color.urgent
+  property string themeGreen: ""
+  property string themeRed: ""
+  readonly property color upColor: themeGreen !== "" ? themeGreen : "#5fbf6f"
+  readonly property color downColor: themeRed !== "" ? themeRed : urgentForeground
+
+  function trendColor(quote) {
+    if (Model.isDown(quote)) return root.downColor
+    if (Model.isUp(quote)) return root.upColor
+    return root.barForeground
+  }
+
+  function signedColor(value) {
+    if (value === null || value === undefined) return root.mutedForeground
+    if (value < 0) return root.downColor
+    if (value > 0) return root.upColor
+    return root.mutedForeground
+  }
+
+  // ---- State edits --------------------------------------------------------
+  function commit(next) {
+    if (!next || next === root.store) return
+    root.store = next
+    root.saveState()
+  }
+
+  function saveState() {
+    if (!root.storeReady || !root.stateLoaded) return
+    stateFile.setText(Store.serializeState(root.store))
+  }
+
+  function loadState(text) {
+    var raw = String(text || "")
+    var parsed = Store.parseState(raw)
+    root.store = parsed
+    root.stateLoaded = true
+    // Repair malformed/empty state once, keeping the file the source of truth.
+    if (Store.serializeState(parsed) !== raw) Qt.callLater(root.saveState)
+    if (root.opened) Qt.callLater(function() { root.ensureChartSeries(true) })
+  }
+
+  function cycleWatchlist(step) {
+    var lists = root.store.watchlists
+    if (lists.length < 2) return
+    var index = 0
+    for (var i = 0; i < lists.length; i++) {
+      if (lists[i].id === root.store.activeWatchlist) index = i
+    }
+    var next = lists[(index + step + lists.length) % lists.length]
+    root.commit(Store.setActiveWatchlist(root.store, next.id))
+  }
+
+  function createWatchlist(name) {
+    root.commit(Store.addWatchlist(root.store, name))
+    root.cancelEditor()
+  }
+
+  function renameCurrentWatchlist(name) {
+    if (!root.activeList) return
+    root.commit(Store.renameWatchlist(root.store, root.activeList.id, name))
+    root.cancelEditor()
+  }
+
+  function deleteCurrentWatchlist() {
+    if (root.store.watchlists.length <= 1) return
+    root.commit(Store.deleteWatchlist(root.store, root.store.activeWatchlist))
+    root.confirmingDelete = false
+  }
+
+  function startCreate() {
+    root.addingWatchlist = true
+    root.renamingWatchlist = false
+    root.nameDraft = ""
+    Qt.callLater(function() { nameField.forceActiveFocus() })
+  }
+
+  function startRename() {
+    if (!root.activeList) return
+    root.addingWatchlist = false
+    root.renamingWatchlist = true
+    root.nameDraft = root.activeList.name
+    Qt.callLater(function() { nameField.forceActiveFocus() })
+  }
+
+  function cancelEditor() {
+    root.addingWatchlist = false
+    root.renamingWatchlist = false
+    root.nameDraft = ""
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function submitEditor() {
+    var value = root.nameDraft.trim()
+    if (root.addingWatchlist) root.createWatchlist(value)
+    else if (root.renamingWatchlist) {
+      if (value !== "") root.renameCurrentWatchlist(value)
+      else root.cancelEditor()
+    }
+  }
+
+  function selectSymbol(symbol) {
+    root.commit(Store.selectSymbol(root.store, symbol))
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function removeSymbol(symbol) {
+    root.commit(Store.removeSymbol(root.store, symbol))
+  }
+
+  function moveSelection(step) {
+    var list = root.symbols
+    if (list.length === 0) return
+    var index = list.indexOf(root.selectedSymbol)
+    if (index === -1) index = 0
+    var next = (index + step + list.length) % list.length
+    root.selectSymbol(list[next])
+  }
+
+  function cycleRange(step) {
+    var index = Model.CHART_RANGES.indexOf(root.activeRange)
+    if (index === -1) index = 0
+    var next = (index + step + Model.CHART_RANGES.length) % Model.CHART_RANGES.length
+    root.selectRange(Model.CHART_RANGES[next])
+  }
+
+  // ---- Search -------------------------------------------------------------
+  property string searchText: ""
+  property var searchResults: []
+  property string searchError: ""
+  property bool searching: false
+  property string searchRequested: ""
+  property bool addingWatchlist: false
+  property bool renamingWatchlist: false
+  property bool confirmingDelete: false
+  property string nameDraft: ""
+
+  function handleSearchText() {
+    root.searchError = ""
+    if (root.searchText.trim() === "") {
+      root.searchResults = []
+      root.searching = false
+      searchTimer.stop()
+      if (searchProc.running) searchProc.running = false
+      return
+    }
+    root.searchResults = []
+    root.searching = true
+    searchTimer.restart()
+  }
+
+  function startSearch() {
+    var query = root.searchText.trim()
+    if (query === "") return
+    if (searchProc.running) searchProc.running = false
+    root.searchRequested = query
+    root.searching = true
+    searchProc.command = Search.searchCommand(query, root.userAgent)
+    searchProc.running = true
+  }
+
+  function handleSearchOutput(text) {
+    if (root.searchRequested !== root.searchText.trim()) return
+    root.searching = false
+    var raw = String(text || "")
+    if (raw.trim() === "") {
+      root.searchResults = []
+      root.searchError = "No response from Yahoo Finance"
+      return
+    }
+    var rows = Search.parseSearch(raw)
+    root.searchResults = rows
+    root.searchError = rows.length ? "" : "No matches"
+  }
+
+  function clearSearch() {
+    root.searchText = ""
+    searchField.text = ""
+    root.searchResults = []
+    root.searchError = ""
+    root.searching = false
+    searchTimer.stop()
+    if (searchProc.running) searchProc.running = false
+  }
+
+  function addResult(result) {
+    if (!result || !result.symbol) return
+    root.commit(Store.addSymbol(root.store, result.symbol))
+    root.clearSearch()
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function submitSearch() {
+    if (root.searchResults.length > 0) {
+      root.addResult(root.searchResults[0])
+      return
+    }
+    var raw = root.searchText.trim().toUpperCase()
+    if (/^[A-Z0-9.^=-]+$/.test(raw)) {
+      root.commit(Store.addSymbol(root.store, raw))
+      root.clearSearch()
+    }
+  }
+
+  // ---- Fetching -----------------------------------------------------------
+  function refresh() {
+    root.retries = 0
+    root.startFetch()
+    root.ensureChartSeries(true)
+  }
+
+  function startFetch() {
+    if (fetchProc.running) return
+    if (root.symbols.length === 0) {
+      root.quotes = []
+      return
+    }
+    fetchProc.command = Model.curlCommand(root.symbols, root.userAgent, "1d")
+    fetchProc.running = true
+  }
+
+  function handleFetchOutput(text) {
+    var raw = String(text || "")
+    if (raw.replace(/\s+/g, "") === "") {
+      root.fetchError = "No response from Yahoo Finance"
+      root.scheduleRetry()
+      return
+    }
+    var parsed = Model.parseQuoteLines(raw, root.symbols)
+    root.quotes = parsed
+    if (Model.validCount(parsed) === 0) {
+      root.fetchError = "No data from Yahoo Finance"
+      root.scheduleRetry()
+      return
+    }
+    root.fetchError = ""
+    root.lastUpdated = Date.now()
+    root.retries = 0
+    root.ensureRates()
+  }
+
+  function ensureRates() {
+    var pairs = Model.ratePairs(root.quotes, root.displayCurrency)
+    if (!pairs.length || ratesProc.running) return
+    root.ratesRequested = pairs
+    ratesProc.command = Model.curlCommand(pairs, root.userAgent, "1d")
+    ratesProc.running = true
+  }
+
+  function handleRatesOutput(text) {
+    var raw = String(text || "")
+    var fresh = raw.replace(/\s+/g, "") === "" ? {} : Model.parseRateLines(raw, root.ratesRequested)
+    var missing = false
+    for (var i = 0; i < root.ratesRequested.length; i++) {
+      if (fresh[root.ratesRequested[i]] === undefined) missing = true
+    }
+    if (missing && root.ratesRetries < 3) {
+      root.ratesRetries++
+      ratesRetryTimer.restart()
+    } else {
+      root.ratesRetries = 0
+    }
+    var merged = {}
+    for (var k in root.rates) merged[k] = root.rates[k]
+    for (var f in fresh) merged[f] = fresh[f]
+    root.rates = merged
+  }
+
+  function scheduleRetry() {
+    if (root.retries >= 3) return
+    root.retries++
+    retryTimer.restart()
+  }
+
+  // ---- Range chart --------------------------------------------------------
+  function ensureChartSeries(force) {
+    if (root.activeRange === "1d" || root.selectedSymbol === "") return
+    if (!force && root.chartSeriesRange === root.activeRange
+        && (root.chartSeries[root.selectedSymbol] || []).length > 0) return
+    root.startChartFetch()
+  }
+
+  function startChartFetch() {
+    if (chartProc.running) return
+    if (root.selectedSymbol === "" || root.activeRange === "1d") return
+    root.chartRequestedSymbol = root.selectedSymbol
+    root.chartRequestedRange = root.activeRange
+    root.chartLoading = true
+    chartProc.command = Model.curlCommand([root.selectedSymbol], root.userAgent, root.activeRange)
+    chartProc.running = true
+  }
+
+  function handleChartOutput(text) {
+    root.chartLoading = false
+    var raw = String(text || "")
+    if (raw.replace(/\s+/g, "") === "") return
+    var parsed = Model.parseSeriesLines(raw, [root.chartRequestedSymbol])
+    root.chartSeries = parsed
+    root.chartSeriesRange = root.chartRequestedRange
+    // The selection or range changed while this response was in flight.
+    if (root.chartRequestedRange !== root.activeRange || root.chartRequestedSymbol !== root.selectedSymbol)
+      Qt.callLater(function() { root.ensureChartSeries(true) })
+  }
+
+  function seriesFor(quote) {
+    if (!quote) return []
+    if (root.activeRange === "1d") return quote.series || []
+    var raw = root.chartSeries[quote.symbol] || []
+    return Model.convertSeries(raw, Model.rateFor(quote.nativeCurrency || quote.currency, root.displayCurrency, root.rates))
+  }
+
+  function selectRange(range) {
+    root.commit(Store.setChartRange(root.store, range))
+  }
+
+  function selectCurrency(step) {
+    var next = Model.currencyCycle(root.displayCurrency, Model.DEFAULT_CURRENCIES, step)
+    root.commit(Store.setCurrency(root.store, next))
+  }
+
+  function currencyLabel(quote) {
+    if (!quote) return ""
+    if (quote.converted) return quote.nativeCurrency + " → " + quote.currency
+    return quote.currency
+  }
+
+  function rangeLabel(range) {
+    return { "1d": "1D", "5d": "5D", "1mo": "1M", "6mo": "6M", "1y": "1Y" }[range] || range
+  }
+
+  function formatStamp(ts, range) {
+    if (ts === null || ts === undefined) return ""
+    var date = new Date(ts * 1000)
+    return Qt.formatDateTime(date, range === "1d" ? "HH:mm" : (range === "5d" ? "ddd HH:mm" : "d MMM"))
+  }
+
+  function openTradingView(symbol) {
+    if (root.bar && typeof root.bar.run === "function")
+      root.bar.run("xdg-open " + Model.shellQuote(Model.tradingViewUrl(symbol)))
+  }
+
+  // ---- Lifecycle ----------------------------------------------------------
+  function open() {
+    root.controller.show()
+    root.refresh()
+  }
+
+  function close() {
+    root.controller.hide()
+  }
+
+  function toggle() {
+    if (root.opened) root.close()
+    else root.open()
+  }
+
+  function switchPanel(direction) {
+    if (root.bar && typeof root.bar.switchPanelFrom === "function")
+      return root.bar.switchPanelFrom(root.barIdentity, direction)
+    return false
+  }
+
+  onSymbolsKeyChanged: {
+    root.quotes = []
+    root.chartSeries = {}
+    root.chartSeriesRange = ""
+    root.fetchError = ""
+    root.lastUpdated = 0
+    root.retries = 0
+    if (fetchProc.running) fetchProc.running = false
+    if (chartProc.running) chartProc.running = false
+    Qt.callLater(root.startFetch)
+    if (root.opened) Qt.callLater(function() { root.ensureChartSeries(true) })
+  }
+
+  onSelectedSymbolChanged: {
+    root.chartSeries = {}
+    root.chartSeriesRange = ""
+    if (root.opened) Qt.callLater(function() { root.ensureChartSeries(true) })
+  }
+
+  onActiveRangeChanged: if (root.opened) root.ensureChartSeries(true)
+  onDisplayCurrencyChanged: {
+    if (ratesProc.running) ratesProc.running = false
+    root.ensureRates()
+  }
+
+  Component.onCompleted: statePrepare.running = true
+
+  // ---- Processes ----------------------------------------------------------
+  Process {
+    id: fetchProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.handleFetchOutput(text)
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var message = String(text || "").split("\n")[0].replace(/^curl:\s*\(\d+\)\s*/, "").trim()
+        if (message !== "" && root.fetchError !== "" && root.quotes.length === 0) root.fetchError = message
+      }
+    }
+  }
+
+  Process {
+    id: searchProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.handleSearchOutput(text)
+    }
+  }
+
+  Process {
+    id: chartProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.handleChartOutput(text)
+    }
+  }
+
+  Process {
+    id: ratesProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.handleRatesOutput(text)
+    }
+  }
+
+  // Directory and file exist before FileView binds; 0700/0600 because this is
+  // private user data, and an atomic write keeps the mode.
+  Process {
+    id: statePrepare
+    command: ["bash", "-c",
+      "umask 077\n" +
+      "dir=$1\n" +
+      "mkdir -p -- \"$dir\" && chmod 700 -- \"$dir\" || exit 1\n" +
+      "file=$dir/state.json\n" +
+      "if [[ -L $file ]]; then rm -f -- \"$file\"; fi\n" +
+      "if [[ -f $file ]]; then chmod 600 -- \"$file\"; elif [[ ! -e $file ]]; then : >\"$file\"; fi\n",
+      "omarchy-stocks-state", root.stateDir]
+    onExited: function(code) { root.storeReady = code === 0 }
+  }
+
+  FileView {
+    id: stateFile
+    path: root.storeReady ? root.statePath : ""
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.loadState(text())
+    onLoadFailed: if (root.storeReady) root.loadState("")
+  }
+
+  Timer {
+    id: searchTimer
+    interval: 350
+    onTriggered: root.startSearch()
+  }
+
+  Timer {
+    id: retryTimer
+    interval: 2500
+    onTriggered: root.startFetch()
+  }
+
+  Timer {
+    id: ratesRetryTimer
+    interval: 2500
+    onTriggered: root.ensureRates()
+  }
+
+  Timer {
+    id: deleteTimer
+    interval: 3000
+    onTriggered: root.confirmingDelete = false
+  }
+
+  Timer {
+    id: refreshTimer
+    interval: 5 * 60 * 1000
+    running: true
+    repeat: true
+    onTriggered: if (root.symbols.length > 0) root.refresh()
+  }
+
+  FileView {
+    id: themeColors
+    path: Color.currentThemePath + "/colors.toml"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      root.themeGreen = Model.parseThemeColor(text(), "green")
+      root.themeRed = Model.parseThemeColor(text(), "red")
+    }
+    onLoadFailed: {
+      root.themeGreen = ""
+      root.themeRed = ""
+    }
+  }
+
+  // ---- Chart sparkline / line --------------------------------------------
+  component SeriesCanvas: Canvas {
+    id: canvas
+    property var series: []
+    property color lineColor: "white"
+    property real lineWidth: 1.5
+    property real pad: 2
+    property bool fill: false
+    property var referenceValue: null
+
+    onSeriesChanged: requestPaint()
+    onLineColorChanged: requestPaint()
+    onReferenceValueChanged: requestPaint()
+    onWidthChanged: requestPaint()
+    onHeightChanged: requestPaint()
+
+    onPaint: {
+      var ctx = getContext("2d")
+      ctx.reset()
+      var pts = Model.seriesPoints(canvas.series, canvas.width, canvas.height, canvas.pad)
+      if (pts.length < 2) return
+
+      if (canvas.fill) {
+        var gradient = ctx.createLinearGradient(0, 0, 0, canvas.height)
+        gradient.addColorStop(0, Qt.rgba(canvas.lineColor.r, canvas.lineColor.g, canvas.lineColor.b, 0.28))
+        gradient.addColorStop(1, Qt.rgba(canvas.lineColor.r, canvas.lineColor.g, canvas.lineColor.b, 0.0))
+        ctx.fillStyle = gradient
+        ctx.beginPath()
+        ctx.moveTo(pts[0].x, canvas.height)
+        for (var f = 0; f < pts.length; f++) ctx.lineTo(pts[f].x, pts[f].y)
+        ctx.lineTo(pts[pts.length - 1].x, canvas.height)
+        ctx.closePath()
+        ctx.fill()
+      }
+
+      var refY = Model.valueToY(canvas.referenceValue, Model.seriesBounds(canvas.series), canvas.height, canvas.pad)
+      if (refY !== null) {
+        ctx.strokeStyle = Qt.rgba(canvas.lineColor.r, canvas.lineColor.g, canvas.lineColor.b, 0.35)
+        ctx.lineWidth = 1
+        ctx.setLineDash([3, 3])
+        ctx.beginPath()
+        ctx.moveTo(pts[0].x, refY)
+        ctx.lineTo(pts[pts.length - 1].x, refY)
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
+
+      ctx.strokeStyle = canvas.lineColor
+      ctx.lineWidth = canvas.lineWidth
+      ctx.lineJoin = "round"
+      ctx.lineCap = "round"
+      ctx.beginPath()
+      ctx.moveTo(pts[0].x, pts[0].y)
+      for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y)
+      ctx.stroke()
+    }
+  }
+
+  KeyboardPanel {
+    id: panel
+    anchorItem: root.anchorItem
+    owner: root.barIdentity
+    bar: root.bar
+    open: root.opened
+    focusTarget: searchField
+    contentWidth: panel.fittedContentWidth(Style.space(960), Style.space(1180))
+    contentHeight: panel.fittedContentHeight(root.panelContentHeight, Style.space(820))
+
+    PanelKeyCatcher {
+      id: keyCatcher
+      anchors.fill: parent
+      blocked: searchField.activeFocus || nameField.activeFocus
+      onCloseRequested: root.close()
+      onReturnRequested: root.refresh()
+      onTabRequested: function(direction) { root.switchPanel(direction) }
+      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveSelection(dy) }
+      onDeleteRequested: if (root.selectedSymbol !== "") root.removeSymbol(root.selectedSymbol)
+      onTextKey: function(text, modifiers) {
+        if (modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) return
+        if (text === "/") searchField.forceActiveFocus()
+        else if (text === "n") root.startCreate()
+        else if (text === "r") root.startRename()
+        else if (text === "D") {
+          if (root.confirmingDelete) {
+            deleteTimer.stop()
+            root.deleteCurrentWatchlist()
+          } else {
+            root.confirmingDelete = true
+            deleteTimer.restart()
+          }
+        }
+        else if (text === "c") root.selectCurrency(1)
+        else if (text === "[") root.cycleWatchlist(-1)
+        else if (text === "]") root.cycleWatchlist(1)
+        else if (text === ",") root.cycleRange(-1)
+        else if (text === ".") root.cycleRange(1)
+      }
+
+      Item {
+        width: parent.width
+        height: parent.height
+
+        Row {
+          anchors.fill: parent
+          spacing: 0
+
+          // =============================================================
+          // Sidebar: search, watchlist controls, tickers.
+          // =============================================================
+          Item {
+            id: sidebar
+            width: Math.min(Style.space(330), parent.width * 0.42)
+            height: parent.height
+
+            Item {
+              anchors.fill: parent
+              anchors.margins: Style.space(10)
+
+              TextField {
+                id: searchField
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                height: Style.spacing.controlHeight
+                placeholderText: "Search symbol or company"
+                foreground: root.barForeground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                onTextChanged: {
+                  root.searchText = text
+                  root.handleSearchText()
+                }
+                onAccepted: root.submitSearch()
+                Keys.onEscapePressed: function(event) {
+                  if (root.searchText !== "") root.clearSearch()
+                  else root.close()
+                  event.accepted = true
+                }
+                Keys.onDownPressed: function(event) {
+                  keyCatcher.forceActiveFocus()
+                  event.accepted = true
+                }
+              }
+
+              Column {
+                id: sideHeader
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: searchField.bottom
+                anchors.topMargin: Style.space(10)
+                spacing: Style.space(6)
+
+                Item {
+                  width: parent.width
+                  height: Style.space(26)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    id: watchlistName
+                    anchors.left: parent.left
+                    anchors.right: prevWatchlist.left
+                    anchors.rightMargin: Style.space(6)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.activeList ? root.activeList.name : ""
+                    elide: Text.ElideRight
+                    color: root.barForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                  }
+
+                  Button {
+                    id: prevWatchlist
+                    anchors.right: nextWatchlist.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(22)
+                    height: Style.space(22)
+                    text: "‹"
+                    fontSize: Style.font.body
+                    foreground: root.barForeground
+                    horizontalPadding: 0
+                    verticalPadding: 0
+                    enabled: root.store.watchlists.length > 1
+                    opacity: enabled ? 1 : 0.4
+                    tooltipText: "Previous watchlist"
+                    onClicked: root.cycleWatchlist(-1)
+                  }
+
+                  Button {
+                    id: nextWatchlist
+                    anchors.right: addWatchlistButton.left
+                    anchors.rightMargin: Style.space(2)
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(22)
+                    height: Style.space(22)
+                    text: "›"
+                    fontSize: Style.font.body
+                    foreground: root.barForeground
+                    horizontalPadding: 0
+                    verticalPadding: 0
+                    enabled: root.store.watchlists.length > 1
+                    opacity: enabled ? 1 : 0.4
+                    tooltipText: "Next watchlist"
+                    onClicked: root.cycleWatchlist(1)
+                  }
+
+                  Button {
+                    id: addWatchlistButton
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(24)
+                    height: Style.space(24)
+                    text: "+"
+                    fontSize: Style.font.subtitle
+                    foreground: root.barForeground
+                    horizontalPadding: 0
+                    verticalPadding: 0
+                    tooltipText: "New watchlist"
+                    onClicked: root.startCreate()
+                  }
+                }
+
+                Row {
+                  width: parent.width
+                  height: Style.space(18)
+                  visible: !root.addingWatchlist && !root.renamingWatchlist
+                  spacing: Style.space(10)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    id: renameAction
+                    text: "Rename"
+                    color: renameMouse.containsMouse ? root.barForeground : root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.underline: renameMouse.containsMouse
+
+                    MouseArea {
+                      id: renameMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.startRename()
+                    }
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    id: deleteAction
+                    visible: root.store.watchlists.length > 1
+                    text: root.confirmingDelete ? "Confirm delete" : "Delete"
+                    color: root.confirmingDelete || deleteMouse.containsMouse
+                      ? root.urgentForeground : root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.underline: deleteMouse.containsMouse
+
+                    MouseArea {
+                      id: deleteMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        if (root.confirmingDelete) {
+                          deleteTimer.stop()
+                          root.deleteCurrentWatchlist()
+                        } else {
+                          root.confirmingDelete = true
+                          deleteTimer.restart()
+                        }
+                      }
+                    }
+                  }
+                }
+
+                TextField {
+                  id: nameField
+                  width: parent.width
+                  height: visible ? Style.spacing.controlHeight : 0
+                  visible: root.addingWatchlist || root.renamingWatchlist
+                  placeholderText: root.addingWatchlist ? "New watchlist name" : "Watchlist name"
+                  text: root.nameDraft
+                  foreground: root.barForeground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  onTextChanged: root.nameDraft = text
+                  onAccepted: root.submitEditor()
+                  Keys.onEscapePressed: function(event) {
+                    root.cancelEditor()
+                    event.accepted = true
+                  }
+                }
+
+                PanelSeparator {
+                  visible: !root.addingWatchlist && !root.renamingWatchlist
+                  foreground: root.barForeground
+                }
+              }
+
+              // Sidebar list area.
+              Flickable {
+                id: tickerList
+                visible: root.searchText.trim() === ""
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: sideHeader.bottom
+                anchors.topMargin: Style.space(6)
+                anchors.bottom: parent.bottom
+                contentWidth: width
+                contentHeight: tickerColumn.implicitHeight
+                clip: true
+                interactive: contentHeight > height
+                boundsBehavior: Flickable.StopAtBounds
+                flickableDirection: Flickable.VerticalFlick
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                Column {
+                  id: tickerColumn
+                  width: tickerList.width
+                  spacing: Style.space(2)
+
+                  Repeater {
+                    model: root.listRows
+
+                    Rectangle {
+                      id: tickerRow
+                      required property var modelData
+                      readonly property bool valid: Model.isValid(modelData)
+                      readonly property bool selected: modelData.symbol === root.selectedSymbol
+                      readonly property var changePct: modelData.changePct
+                      width: tickerColumn.width
+                      height: Style.space(50)
+                      radius: Style.cornerRadius
+                      color: tickerRow.selected
+                        ? Style.selectedFillFor(root.barForeground, Color.accent)
+                        : (rowMouse.containsMouse ? Style.hoverFillFor(root.barForeground, Color.accent) : "transparent")
+
+                      MouseArea {
+                        id: rowMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.selectSymbol(tickerRow.modelData.symbol)
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        id: tickerName
+                        anchors.left: parent.left
+                        anchors.leftMargin: Style.space(8)
+                        anchors.right: spark.left
+                        anchors.rightMargin: Style.space(8)
+                        anchors.top: parent.top
+                        anchors.topMargin: Style.space(6)
+                        text: tickerRow.valid
+                          ? (tickerRow.modelData.name || tickerRow.modelData.symbol)
+                          : (tickerRow.modelData.error || "Loading…")
+                        elide: Text.ElideRight
+                        color: tickerRow.valid ? root.barForeground : root.mutedForeground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        font.italic: !tickerRow.valid
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.left: tickerName.left
+                        anchors.right: tickerName.right
+                        anchors.top: tickerName.bottom
+                        anchors.topMargin: 1
+                        text: tickerRow.modelData.symbol
+                        elide: Text.ElideRight
+                        color: root.mutedForeground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                      }
+
+                      SeriesCanvas {
+                        id: spark
+                        anchors.right: priceColumn.left
+                        anchors.rightMargin: Style.space(8)
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Style.space(46)
+                        height: Style.space(18)
+                        visible: tickerRow.valid
+                        series: tickerRow.modelData.series || []
+                        lineColor: root.trendColor(tickerRow.modelData)
+                        lineWidth: 1.25
+                        pad: 1.5
+                      }
+
+                      Column {
+                        id: priceColumn
+                        anchors.right: removeButton.left
+                        anchors.rightMargin: Style.space(2)
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Style.space(74)
+                        spacing: Style.space(2)
+
+                        Text {
+                          textFormat: Text.PlainText
+                          anchors.right: parent.right
+                          text: tickerRow.valid ? Model.formatPrice(tickerRow.modelData.price) : "…"
+                          color: root.barForeground
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.body
+                        }
+
+                        Rectangle {
+                          anchors.right: parent.right
+                          visible: tickerRow.valid && tickerRow.changePct !== null
+                          width: badgeText.implicitWidth + Style.space(8)
+                          height: badgeText.implicitHeight + Style.space(1)
+                          radius: Style.space(3)
+                          color: Qt.rgba(root.signedColor(tickerRow.changePct).r,
+                                         root.signedColor(tickerRow.changePct).g,
+                                         root.signedColor(tickerRow.changePct).b, 0.14)
+
+                          Text {
+                            textFormat: Text.PlainText
+                            id: badgeText
+                            anchors.centerIn: parent
+                            text: Model.formatSignedPercent2(tickerRow.changePct)
+                            color: root.signedColor(tickerRow.changePct)
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                          }
+                        }
+                      }
+
+                      Button {
+                        id: removeButton
+                        anchors.right: parent.right
+                        anchors.rightMargin: Style.space(2)
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Style.space(18)
+                        height: Style.space(18)
+                        text: "×"
+                        fontSize: Style.font.body
+                        foreground: removeButton.hot ? root.urgentForeground : root.mutedForeground
+                        horizontalPadding: 0
+                        verticalPadding: 0
+                        opacity: rowMouse.containsMouse || removeButton.hot || tickerRow.selected ? 1 : 0.45
+                        tooltipText: "Remove ticker"
+                        onClicked: root.removeSymbol(tickerRow.modelData.symbol)
+                      }
+                    }
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    visible: root.symbols.length === 0
+                    width: parent.width
+                    topPadding: Style.space(10)
+                    text: "No tickers yet.\nSearch above to add one."
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    color: root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.italic: true
+                  }
+                }
+              }
+
+              // Search results replace the ticker list while typing.
+              Flickable {
+                id: searchList
+                visible: root.searchText.trim() !== ""
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: sideHeader.bottom
+                anchors.topMargin: Style.space(6)
+                anchors.bottom: parent.bottom
+                contentWidth: width
+                contentHeight: searchColumn.implicitHeight
+                clip: true
+                interactive: contentHeight > height
+                boundsBehavior: Flickable.StopAtBounds
+                flickableDirection: Flickable.VerticalFlick
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                Column {
+                  id: searchColumn
+                  width: searchList.width
+                  spacing: Style.space(2)
+
+                  Repeater {
+                    model: root.searchResults
+
+                    Rectangle {
+                      id: resultRow
+                      required property var modelData
+                      width: searchColumn.width
+                      height: Style.space(44)
+                      radius: Style.cornerRadius
+                      color: resultMouse.containsMouse
+                        ? Style.hoverFillFor(root.barForeground, Color.accent) : "transparent"
+
+                      Column {
+                        anchors.left: parent.left
+                        anchors.leftMargin: Style.space(8)
+                        anchors.right: resultMeta.left
+                        anchors.rightMargin: Style.space(8)
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 1
+
+                        Text {
+                          textFormat: Text.PlainText
+                          width: parent.width
+                          text: resultRow.modelData.symbol
+                          elide: Text.ElideRight
+                          color: root.barForeground
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall
+                          font.bold: true
+                        }
+                        Text {
+                          textFormat: Text.PlainText
+                          width: parent.width
+                          text: resultRow.modelData.name
+                          elide: Text.ElideRight
+                          color: root.mutedForeground
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                        }
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        id: resultMeta
+                        anchors.right: parent.right
+                        anchors.rightMargin: Style.space(8)
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.symbols.indexOf(resultRow.modelData.symbol) === -1
+                          ? resultRow.modelData.exchange : "Added"
+                        color: root.mutedForeground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      MouseArea {
+                        id: resultMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.addResult(resultRow.modelData)
+                      }
+                    }
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    visible: root.searching
+                    width: parent.width
+                    topPadding: Style.space(10)
+                    text: "Searching…"
+                    horizontalAlignment: Text.AlignHCenter
+                    color: root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.italic: true
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    visible: !root.searching && root.searchError !== ""
+                    width: parent.width
+                    topPadding: Style.space(10)
+                    text: root.searchError
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    color: root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.italic: true
+                  }
+                }
+              }
+            }
+          }
+
+          Rectangle {
+            width: 1
+            height: parent.height
+            color: Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.12)
+          }
+
+          // =============================================================
+          // Detail pane: selected ticker, chart, range, stats.
+          // =============================================================
+          Item {
+            width: parent.width - sidebar.width - 1
+            height: parent.height
+
+            Item {
+              anchors.fill: parent
+              anchors.margins: Style.space(14)
+
+              Column {
+                id: emptyDetail
+                visible: root.selectedSymbol === ""
+                anchors.centerIn: parent
+                width: parent.width * 0.8
+                spacing: Style.space(6)
+
+                Text {
+                  textFormat: Text.PlainText
+                  width: parent.width
+                  text: "No ticker selected"
+                  horizontalAlignment: Text.AlignHCenter
+                  color: root.barForeground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.subtitle
+                  font.bold: true
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  width: parent.width
+                  text: "Search for a symbol or company on the left to add it to this watchlist."
+                  wrapMode: Text.WordWrap
+                  horizontalAlignment: Text.AlignHCenter
+                  color: root.mutedForeground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                }
+              }
+
+              Column {
+                id: detailColumn
+                visible: root.selectedSymbol !== ""
+                anchors.fill: parent
+                spacing: Style.space(10)
+
+                // Header: name on the left, price and day change on the right.
+                Item {
+                  width: parent.width
+                  height: Math.max(nameColumn.implicitHeight, priceColumn.implicitHeight)
+
+                  Column {
+                    id: nameColumn
+                    anchors.left: parent.left
+                    anchors.right: priceColumn.left
+                    anchors.rightMargin: Style.space(10)
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(2)
+
+                    Text {
+                      textFormat: Text.PlainText
+                      width: parent.width
+                      text: Model.isValid(root.detailQuote)
+                        ? (root.detailQuote.name || root.detailQuote.symbol)
+                        : root.selectedSymbol
+                      elide: Text.ElideRight
+                      color: root.barForeground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.heading
+                      font.bold: true
+                    }
+                    Text {
+                      textFormat: Text.PlainText
+                      width: parent.width
+                      text: Model.isValid(root.detailQuote)
+                        ? [root.detailQuote.symbol, root.detailQuote.exchange, root.currencyLabel(root.detailQuote)]
+                            .filter(function(part) { return !!part }).join(" · ")
+                        : root.selectedSymbol
+                      elide: Text.ElideRight
+                      color: root.mutedForeground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+
+                  Column {
+                    id: priceColumn
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 0
+
+                    Text {
+                      textFormat: Text.PlainText
+                      anchors.right: parent.right
+                      text: Model.isValid(root.detailQuote) ? Model.formatPrice(root.detailQuote.price) : "…"
+                      color: root.barForeground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.displayLarge
+                      font.bold: true
+                    }
+                    Text {
+                      textFormat: Text.PlainText
+                      anchors.right: parent.right
+                      text: Model.isValid(root.detailQuote) ? Model.formatChange(root.detailQuote) : ""
+                      color: root.trendColor(root.detailQuote)
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                    }
+                  }
+                }
+
+                // Range and display currency.
+                Row {
+                  width: parent.width
+                  height: Style.space(26)
+                  spacing: Style.space(4)
+
+                  Repeater {
+                    model: Model.CHART_RANGES
+
+                    Button {
+                      required property string modelData
+                      text: root.rangeLabel(modelData)
+                      selected: modelData === root.activeRange
+                      fontSize: Style.font.caption
+                      foreground: root.barForeground
+                      horizontalPadding: Style.space(8)
+                      verticalPadding: Style.space(3)
+                      onClicked: root.selectRange(modelData)
+                    }
+                  }
+
+                  Item { width: Style.space(6); height: 1 }
+
+                  Button {
+                    readonly property bool active: root.displayCurrency !== ""
+                    text: (root.displayCurrency !== "" ? root.displayCurrency : "Native") + " ⇄"
+                    selected: active
+                    fontSize: Style.font.caption
+                    foreground: root.barForeground
+                    horizontalPadding: Style.space(8)
+                    verticalPadding: Style.space(3)
+                    tooltipText: "Right-click to cycle back"
+                    onClicked: root.selectCurrency(1)
+                    onRightClicked: root.selectCurrency(-1)
+                  }
+                }
+
+                // Price chart.
+                Item {
+                  width: parent.width
+                  height: Style.space(250)
+
+                  SeriesCanvas {
+                    anchors.fill: parent
+                    series: root.detailSeries
+                    lineColor: root.trendColor(root.detailQuote)
+                    lineWidth: 1.75
+                    pad: 4
+                    fill: true
+                    referenceValue: root.activeRange === "1d" && Model.isValid(root.detailQuote)
+                      ? root.detailQuote.prevClose : null
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.top: parent.top
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(4)
+                    text: {
+                      var bounds = Model.seriesBounds(root.detailSeries)
+                      return bounds ? Model.formatPrice(bounds.max) : ""
+                    }
+                    color: root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.bottom: parent.bottom
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(4)
+                    text: {
+                      var bounds = Model.seriesBounds(root.detailSeries)
+                      return bounds ? Model.formatPrice(bounds.min) : ""
+                    }
+                    color: root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.centerIn: parent
+                    visible: root.detailSeries.length < 2
+                    text: root.chartLoading ? "Loading chart…" : (root.loading ? "Loading…" : "No chart data")
+                    color: root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.italic: true
+                  }
+                }
+
+                Item {
+                  width: parent.width
+                  height: firstStamp.implicitHeight
+                  visible: root.detailSeries.length >= 2
+
+                  Text {
+                    textFormat: Text.PlainText
+                    id: firstStamp
+                    anchors.left: parent.left
+                    text: root.detailSeries.length
+                      ? root.formatStamp(root.detailSeries[0].t, root.activeRange) : ""
+                    color: root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.right: parent.right
+                    text: root.detailSeries.length
+                      ? root.formatStamp(root.detailSeries[root.detailSeries.length - 1].t, root.activeRange) : ""
+                    color: root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                PanelSeparator { foreground: root.barForeground }
+
+                Grid {
+                  id: stats
+                  width: parent.width
+                  columns: 4
+                  columnSpacing: 0
+                  rowSpacing: Style.space(4)
+
+                  readonly property real statLabelWidth: Style.space(84)
+                  readonly property real statValueWidth: (stats.width - statLabelWidth * 2) / 2
+                  readonly property var entries: Model.isValid(root.detailQuote) ? [
+                    ["Prev close", Model.formatPrice(root.detailQuote.prevClose)],
+                    ["Open", Model.formatPrice(root.detailQuote.open)],
+                    ["Day range", root.detailQuote.dayLow !== null && root.detailQuote.dayHigh !== null
+                      ? Model.formatPrice(root.detailQuote.dayLow) + " – " + Model.formatPrice(root.detailQuote.dayHigh) : ""],
+                    ["52w range", root.detailQuote.week52Low !== null && root.detailQuote.week52High !== null
+                      ? Model.formatPrice(root.detailQuote.week52Low) + " – " + Model.formatPrice(root.detailQuote.week52High) : ""],
+                    ["Volume", Model.formatVolume(root.detailQuote.volume)],
+                    ["Last trade", root.detailQuote.marketTime !== null
+                      ? Qt.formatDateTime(new Date(root.detailQuote.marketTime * 1000), "ddd HH:mm") : ""]
+                  ] : []
+
+                  Repeater {
+                    model: stats.entries.length * 2
+
+                    Text {
+                      textFormat: Text.PlainText
+                      required property int index
+                      readonly property bool isLabel: index % 2 === 0
+                      readonly property var entry: stats.entries[Math.floor(index / 2)]
+                      width: isLabel ? stats.statLabelWidth : stats.statValueWidth
+                      text: entry ? (isLabel ? entry[0] : (entry[1] || "—")) : ""
+                      elide: Text.ElideRight
+                      color: isLabel ? root.mutedForeground : root.barForeground
+                      font.family: root.fontFamily
+                      font.pixelSize: isLabel ? Style.font.caption : Style.font.bodySmall
+                    }
+                  }
+                }
+
+                Item {
+                  width: parent.width
+                  height: footerText.implicitHeight
+
+                  Text {
+                    textFormat: Text.PlainText
+                    id: footerText
+                    anchors.left: parent.left
+                    anchors.right: tradingViewLink.left
+                    anchors.rightMargin: Style.space(10)
+                    text: root.fetchError !== ""
+                      ? "Could not update: " + root.fetchError
+                      : (root.lastUpdated > 0
+                          ? "Updated " + Qt.formatTime(new Date(root.lastUpdated), "HH:mm")
+                          : (root.loading ? "Fetching quotes…" : "No data yet"))
+                    elide: Text.ElideRight
+                    color: root.fetchError !== "" ? root.urgentForeground : root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    id: tradingViewLink
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Open on TradingView ↗"
+                    color: linkMouse.containsMouse ? root.barForeground : root.mutedForeground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.underline: linkMouse.containsMouse
+
+                    MouseArea {
+                      id: linkMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.openTradingView(root.selectedSymbol)
+                    }
+                  }
+                }
+
+                Item { width: 1; height: 1 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

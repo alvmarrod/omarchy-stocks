@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.alvmarrod.stocks",
+  "name": "Stocks",
+  "version": "1.0.0",
+  "author": "alvmarrod",
+  "license": "MIT",
+  "description": "Watchlists, quotes and charts for the Omarchy bar (Yahoo Finance, no API key).",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Stocks",
+    "description": "Selected stock quote; click for watchlists and charts",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "center"
+  }
+}
