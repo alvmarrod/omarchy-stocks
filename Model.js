@@ -63,6 +63,12 @@ function chartInterval(range) {
   return CHART_INTERVALS[range] || "1d"
 }
 
+var INTERVAL_SECONDS = { "5m": 300, "15m": 900, "1d": 86400, "1wk": 604800 }
+
+function intervalSeconds(interval) {
+  return INTERVAL_SECONDS[String(interval || "")] || 0
+}
+
 // The quote fetch always uses range=1d (previousClose there is the prior
 // session's close); other ranges are only used for chart series.
 function chartUrl(symbol, range) {
@@ -146,6 +152,7 @@ function emptyQuote(symbol, error) {
     open: null,
     volume: null,
     series: [],
+    sessionEnd: null,
     error: String(error || "")
   }
 }
@@ -223,16 +230,21 @@ function parseChartResponse(line) {
   quote.open = firstOpen(result)
   quote.volume = toNumber(meta.regularMarketVolume)
   quote.series = parseSeries(result)
+  quote.sessionEnd = seriesEndTime(quote.series, meta.currentTradingPeriod && meta.currentTradingPeriod.regular)
   return quote
 }
 
-// Chart-range fetch -> { SYM: series }. Reuses parseQuoteLines for the
-// symbol/position matching; only the series is kept.
+// Chart-range fetch -> { series: { SYM: series }, ends: { SYM: sessionEnd } }.
+// Reuses parseQuoteLines for the symbol/position matching.
 function parseSeriesLines(text, symbols) {
   var quotes = parseQuoteLines(text, symbols)
-  var out = {}
-  for (var i = 0; i < quotes.length; i++) out[quotes[i].symbol] = quotes[i].series || []
-  return out
+  var series = {}
+  var ends = {}
+  for (var i = 0; i < quotes.length; i++) {
+    series[quotes[i].symbol] = quotes[i].series || []
+    ends[quotes[i].symbol] = quotes[i].sessionEnd
+  }
+  return { series: series, ends: ends }
 }
 
 // Whole curl stdout -> one Quote per requested symbol, in request order.
@@ -597,7 +609,7 @@ function loadingLabel(symbol) {
 
 // ---- Chart geometry (pure so Canvas painting stays trivial and testable).
 
-function seriesBounds(series) {
+function seriesBounds(series, include) {
   var list = series || []
   if (!list.length) return null
   var min = list[0].c
@@ -605,6 +617,13 @@ function seriesBounds(series) {
   for (var i = 1; i < list.length; i++) {
     if (list[i].c < min) min = list[i].c
     if (list[i].c > max) max = list[i].c
+  }
+  // Keep a reference line (e.g. previous close) visible even when it sits
+  // outside the data's own range.
+  var extra = toNumber(include)
+  if (extra !== null) {
+    if (extra < min) min = extra
+    if (extra > max) max = extra
   }
   return { min: min, max: max }
 }
@@ -616,21 +635,98 @@ function scaleY(value, bounds, height, padding) {
   return padding + ((bounds.max - value) / span) * inner
 }
 
-// x is proportional to time (so weekend gaps in a 5d series read correctly),
-// y is scaled between the series' min (bottom) and max (top).
-function seriesPoints(series, width, height, padding) {
+// Right edge for an in-progress intraday chart: the regular session's close
+// when the last bar belongs to that session, else null. Yahoo may report the
+// next session on a closed market; filling the data is then the safe choice.
+function seriesEndTime(series, period) {
   var list = series || []
-  var bounds = seriesBounds(list)
+  var start = period ? toNumber(period.start) : null
+  var end = period ? toNumber(period.end) : null
+  if (!list.length || start === null || end === null) return null
+  var last = list[list.length - 1].t
+  return last >= start && last <= end ? end : null
+}
+
+// One equal x-slot per bar, so closed-market time (overnight, weekends,
+// holidays) takes no width and the line never spans a flat close-to-open gap.
+// While a session is open, endTime (its close) and interval (bar seconds) add
+// the slots still to come, leaving the rest of the canvas empty.
+function seriesSlots(series, endTime, interval) {
+  var list = series || []
+  if (!list.length) return 0
+  var slots = list.length - 1
+  var close = toNumber(endTime)
+  var step = toNumber(interval)
+  var last = list[list.length - 1].t
+  if (close !== null && step !== null && step > 0 && close > last) slots += (close - last) / step
+  return slots
+}
+
+function slotFraction(t, series, slots, interval) {
+  var list = series || []
+  if (!list.length || slots <= 0) return 0
+  var step = toNumber(interval)
+  var last = list[list.length - 1].t
+  if (t > last) return step !== null && step > 0 ? ((list.length - 1) + (t - last) / step) / slots : (list.length - 1) / slots
+  if (t <= list[0].t) return 0
+  for (var i = 1; i < list.length; i++) {
+    if (t <= list[i].t) {
+      var span = list[i].t - list[i - 1].t
+      return (i - 1 + (span > 0 ? (t - list[i - 1].t) / span : 0)) / slots
+    }
+  }
+  return 1
+}
+
+// x is one slot per bar (open-market time only); y is scaled between the
+// series' min (bottom) and max (top).
+function seriesPoints(series, width, height, padding, endTime, boundsValue, interval) {
+  var list = series || []
+  var bounds = seriesBounds(list, boundsValue)
+  var slots = seriesSlots(list, endTime, interval)
   if (!bounds) return []
   var pad = padding || 0
-  var t0 = list[0].t
-  var t1 = list[list.length - 1].t
-  var span = t1 - t0
-  var innerW = width - pad * 2
   var out = []
   for (var i = 0; i < list.length; i++) {
-    var x = span > 0 ? pad + ((list[i].t - t0) / span) * innerW : pad
+    var x = slots > 0 ? pad + (i / slots) * (width - pad * 2) : pad
     out.push({ x: x, y: scaleY(list[i].c, bounds, height, pad) })
+  }
+  return out
+}
+
+// Axis guides as { t, fraction } (fraction along the slot axis): hourly for
+// 1D, one per session for 5D, and evenly spaced over the longer ranges.
+// UTC boundaries are invisible on an axis without tick labels.
+function chartTimeTicks(series, range, endTime, interval) {
+  var list = series || []
+  var slots = seriesSlots(list, endTime, interval)
+  if (!list.length || slots <= 0) return []
+  var out = []
+  var i
+  if (range === "1d") {
+    var last = list[list.length - 1].t
+    var close = toNumber(endTime)
+    var endWall = close !== null && close > last ? close : last
+    for (var t = Math.floor(list[0].t / 3600) * 3600 + 3600; t < endWall; t += 3600)
+      out.push({ t: t, fraction: slotFraction(t, list, slots, interval) })
+    return out
+  }
+  if (range !== "5d") {
+    var count = range === "6mo" ? 6 : 4
+    for (i = 1; i < count; i++) {
+      var slot = slots * i / count
+      var lo = Math.floor(slot)
+      var hi = lo + 1 < list.length ? lo + 1 : lo
+      var inner = slot - lo
+      out.push({ t: list[lo].t + (list[hi].t - list[lo].t) * inner, fraction: i / count })
+    }
+    return out
+  }
+  var day = null
+  for (i = 0; i < list.length; i++) {
+    var key = Math.floor(list[i].t / 86400)
+    if (day !== null && key !== day) out.push({ t: list[i].t, fraction: i / slots })
+    day = key
   }
   return out
 }
@@ -895,8 +991,12 @@ if (typeof module !== "undefined") {
     tickerWidth: tickerWidth,
     scrollSpeed: scrollSpeed,
     parseSeriesLines: parseSeriesLines,
+    seriesEndTime: seriesEndTime,
     seriesBounds: seriesBounds,
     seriesPoints: seriesPoints,
+    seriesSlots: seriesSlots,
+    chartTimeTicks: chartTimeTicks,
+    intervalSeconds: intervalSeconds,
     valueToY: valueToY,
     tapeItems: tapeItems,
     screenSymbolLabel: screenSymbolLabel,

@@ -2,6 +2,18 @@
 
 All notable changes to this plugin are documented here.
 
+## [1.1.0] - 2026-11-07
+
+### Added
+
+- Watchlist sparklines show the previous close as a dotted line across the full width, tinted like the surrounding text.
+- Detail chart grid with hour/session guides for intraday ranges, evenly spaced guides for longer ranges, and horizontal guides scaled to the visible price range. Axis labels now sit on each guide.
+
+### Fixed
+
+- Intraday charts (1D/5D and watchlist sparklines) now grow from the session open and leave the rest of the session blank, instead of stretching a partial day across the whole width.
+- Charts plot one x-slot per bar, so overnight, weekend and holiday gaps no longer widen the plot or draw long straight close-to-open lines.
+
 ## [1.0.0] - 2026-11-05
 
 ### Added

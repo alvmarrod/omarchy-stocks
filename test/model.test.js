@@ -379,10 +379,32 @@ test("parseChartResponse: series skips nulls, reads open/volume, prefers previou
   assert.deepEqual(Model.emptyQuote("Z", "No data").series, [])
 })
 
-test("parseSeriesLines: symbol -> series map, missing symbols get []", () => {
-  const map = Model.parseSeriesLines(SERIES_LINE + "\n" + NOT_FOUND_LINE + "\n", ["AAPL", "NOPE"])
-  assert.equal(map.AAPL.length, 3)
-  assert.deepEqual(map.NOPE, [])
+test("parseSeriesLines: symbol -> series map and session ends, missing symbols get []", () => {
+  const parsed = Model.parseSeriesLines(SERIES_LINE + "\n" + NOT_FOUND_LINE + "\n", ["AAPL", "NOPE"])
+  assert.equal(parsed.series.AAPL.length, 3)
+  assert.deepEqual(parsed.series.NOPE, [])
+  assert.equal(parsed.ends.AAPL, null)
+  assert.equal(parsed.ends.NOPE, null)
+})
+
+const SESSION_LINE = JSON.stringify({ chart: { result: [{ meta: {
+  symbol: "AAPL", regularMarketPrice: 305.59, regularMarketTime: 500,
+  currentTradingPeriod: { regular: { start: 100, end: 1000 } }
+}, timestamp: [100, 500], indicators: { quote: [{ close: [305.76, 305.69] }] } }], error: null } })
+
+test("parseChartResponse: sessionEnd is the close of the session holding the last bar", () => {
+  assert.equal(Model.parseChartResponse(SESSION_LINE).sessionEnd, 1000)
+  assert.equal(Model.parseChartResponse(SERIES_LINE).sessionEnd, null)
+})
+
+test("seriesEndTime: only when the last bar belongs to the reported session", () => {
+  const s = [{ t: 100, c: 1 }, { t: 500, c: 2 }]
+  assert.equal(Model.seriesEndTime(s, { start: 100, end: 1000 }), 1000)
+  assert.equal(Model.seriesEndTime(s, { start: 100, end: 500 }), 500)
+  assert.equal(Model.seriesEndTime(s, { start: 600, end: 1000 }), null)  // next session
+  assert.equal(Model.seriesEndTime(s, { start: 100 }), null)
+  assert.equal(Model.seriesEndTime([], { start: 100, end: 1000 }), null)
+  assert.equal(Model.seriesEndTime(s, null), null)
 })
 
 test("seriesBounds", () => {
@@ -392,16 +414,73 @@ test("seriesBounds", () => {
   assert.equal(Model.seriesBounds(null), null)
 })
 
-test("seriesPoints: time-proportional x, value-scaled y within padding", () => {
+test("seriesBounds: an optional reference value widens the range so a line stays visible", () => {
+  const s = [{ t: 0, c: 10 }, { t: 10, c: 20 }]
+  assert.deepEqual(Model.seriesBounds(s, 5), { min: 5, max: 20 })
+  assert.deepEqual(Model.seriesBounds(s, 25), { min: 10, max: 25 })
+  assert.deepEqual(Model.seriesBounds(s, 15), { min: 10, max: 20 })
+  assert.deepEqual(Model.seriesBounds(s, null), { min: 10, max: 20 })
+})
+
+test("seriesPoints: boundsValue keeps a reference outside the data on the canvas", () => {
+  const s = [{ t: 0, c: 10 }, { t: 10, c: 20 }]
+  assert.deepEqual(Model.seriesPoints(s, 100, 40, 2, 0, 5).map(p => p.y), [26, 2])
+  assert.equal(Model.valueToY(5, Model.seriesBounds(s, 5), 40, 2), 38)
+  assert.deepEqual(Model.seriesPoints(s, 100, 40, 2, 0, 15), Model.seriesPoints(s, 100, 40, 2))
+})
+
+test("seriesSlots / intervalSeconds: one slot per bar plus an open session's remainder", () => {
+  const s = [{ t: 0, c: 1 }, { t: 5, c: 2 }]
+  assert.equal(Model.seriesSlots(s, 0, 5), 1)
+  assert.equal(Model.seriesSlots(s, 15, 5), 3)
+  assert.equal(Model.seriesSlots(s, 15, 0), 1)
+  assert.equal(Model.seriesSlots([], 15, 5), 0)
+  assert.equal(Model.intervalSeconds("5m"), 300)
+  assert.equal(Model.intervalSeconds("15m"), 900)
+  assert.equal(Model.intervalSeconds("1d"), 86400)
+  assert.equal(Model.intervalSeconds("1wk"), 604800)
+  assert.equal(Model.intervalSeconds("nope"), 0)
+})
+
+test("chartTimeTicks: hourly on 1d, per session on 5d, spread on longer ranges", () => {
+  const day = 86400
+  const oneDay = [{ t: 0, c: 1 }, { t: 6 * 3600, c: 2 }]
+  const hourly = Model.chartTimeTicks(oneDay, "1d", 0, 0)
+  assert.deepEqual(hourly.map(tick => tick.t), [3600, 7200, 10800, 14400, 18000])
+  assert.deepEqual(hourly.map(tick => tick.fraction), [1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6])
+  const fiveDays = [0, day, 2 * day, 3 * day, 4 * day].map(t => ({ t, c: 1 }))
+  const sessions = Model.chartTimeTicks(fiveDays, "5d", 0, 0)
+  assert.deepEqual(sessions.map(tick => tick.t), [day, 2 * day, 3 * day, 4 * day])
+  assert.deepEqual(sessions.map(tick => tick.fraction), [0.25, 0.5, 0.75, 1])
+  const month = [{ t: 0, c: 1 }, { t: 1000, c: 2 }]
+  const weekly = Model.chartTimeTicks(month, "1mo", 0)
+  assert.deepEqual(weekly.map(tick => tick.t), [250, 500, 750])
+  assert.deepEqual(weekly.map(tick => tick.fraction), [0.25, 0.5, 0.75])
+  assert.equal(Model.chartTimeTicks(month, "6mo", 0).length, 5)
+  assert.equal(Model.chartTimeTicks(month, "1y", 0).length, 3)
+  assert.deepEqual(Model.chartTimeTicks([], "1d", 0), [])
+})
+
+test("seriesPoints: one x-slot per bar, value-scaled y within padding", () => {
   const s = [{ t: 0, c: 10 }, { t: 5, c: 14 }, { t: 10, c: 12 }]
   const pts = Model.seriesPoints(s, 100, 40, 2)
   assert.equal(pts.length, 3)
   assert.deepEqual(pts[0], { x: 2, y: 38 })     // min value -> bottom
   assert.deepEqual(pts[1], { x: 50, y: 2 })     // max value -> top
   assert.deepEqual(pts[2], { x: 98, y: 20 })    // midway value -> middle
+  // Uneven bar timestamps (overnight/weekend gaps) keep equal spacing.
+  assert.deepEqual(Model.seriesPoints([{ t: 0, c: 10 }, { t: 1, c: 14 }, { t: 1000, c: 12 }], 100, 40, 2)
+    .map(p => p.x), [2, 50, 98])
   assert.deepEqual(Model.seriesPoints([{ t: 3, c: 7 }], 100, 40, 2), [{ x: 2, y: 20 }])
   assert.deepEqual(Model.seriesPoints([{ t: 3, c: 7 }, { t: 9, c: 7 }], 100, 40, 2), [{ x: 2, y: 20 }, { x: 98, y: 20 }])
   assert.deepEqual(Model.seriesPoints([], 100, 40, 2), [])
+})
+
+test("seriesPoints: endTime and interval leave the rest of an open session empty", () => {
+  const s = [{ t: 0, c: 10 }, { t: 5, c: 14 }, { t: 10, c: 12 }]
+  assert.deepEqual(Model.seriesPoints(s, 100, 40, 2, 20, null, 5).map(p => p.x), [2, 26, 50])
+  assert.deepEqual(Model.seriesPoints(s, 100, 40, 2, 10), Model.seriesPoints(s, 100, 40, 2))
+  assert.deepEqual(Model.seriesPoints(s, 100, 40, 2, 0), Model.seriesPoints(s, 100, 40, 2))
 })
 
 test("valueToY: inside the bounds maps like seriesPoints, outside is null", () => {

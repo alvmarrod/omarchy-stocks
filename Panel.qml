@@ -38,6 +38,7 @@ Panel {
   // ---- Quotes, chart and FX ----------------------------------------------
   property var quotes: []
   property var chartSeries: ({})
+  property real chartSeriesEnd: 0
   property string chartSeriesRange: ""
   property string chartRequestedSymbol: ""
   property string chartRequestedRange: ""
@@ -49,7 +50,7 @@ Panel {
   property double lastUpdated: 0
   property int retries: 0
 
-  readonly property string userAgent: "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.0.0"
+  readonly property string userAgent: "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.1.0"
   readonly property bool loading: quotes.length === 0 && fetchError === ""
   readonly property var shownQuotes: Model.convertAll(quotes, displayCurrency, rates)
 
@@ -402,7 +403,8 @@ Panel {
     var raw = String(text || "")
     if (raw.replace(/\s+/g, "") === "") return
     var parsed = Model.parseSeriesLines(raw, [root.chartRequestedSymbol])
-    root.chartSeries = parsed
+    root.chartSeries = parsed.series
+    root.chartSeriesEnd = parsed.ends[root.chartRequestedSymbol] || 0
     root.chartSeriesRange = root.chartRequestedRange
     // The selection or range changed while this response was in flight.
     if (root.chartRequestedRange !== root.activeRange || root.chartRequestedSymbol !== root.selectedSymbol)
@@ -414,6 +416,14 @@ Panel {
     if (root.activeRange === "1d") return quote.series || []
     var raw = root.chartSeries[quote.symbol] || []
     return Model.convertSeries(raw, Model.rateFor(quote.nativeCurrency || quote.currency, root.displayCurrency, root.rates))
+  }
+
+  // Session close used as the chart's right edge while intraday data is partial.
+  function chartEndFor(quote) {
+    if (!quote) return 0
+    if (root.activeRange === "1d") return quote.sessionEnd || 0
+    if (root.activeRange === "5d") return root.chartSeriesEnd
+    return 0
   }
 
   function selectRange(range) {
@@ -470,6 +480,7 @@ Panel {
   onSymbolsKeyChanged: {
     root.quotes = []
     root.chartSeries = {}
+    root.chartSeriesEnd = 0
     root.chartSeriesRange = ""
     root.fetchError = ""
     root.lastUpdated = 0
@@ -482,6 +493,7 @@ Panel {
 
   onSelectedSymbolChanged: {
     root.chartSeries = {}
+    root.chartSeriesEnd = 0
     root.chartSeriesRange = ""
     if (root.opened) Qt.callLater(function() { root.ensureChartSeries(true) })
   }
@@ -615,18 +627,54 @@ Panel {
     property real pad: 2
     property bool fill: false
     property var referenceValue: null
+    property color referenceColor: lineColor
+    property var boundsValue: null
+    property real endTime: 0
+    property real interval: 0
+    property bool grid: false
+    property color gridColor: "white"
+    property string range: ""
 
     onSeriesChanged: requestPaint()
     onLineColorChanged: requestPaint()
     onReferenceValueChanged: requestPaint()
+    onReferenceColorChanged: requestPaint()
+    onBoundsValueChanged: requestPaint()
+    onEndTimeChanged: requestPaint()
+    onIntervalChanged: requestPaint()
+    onGridColorChanged: requestPaint()
+    onRangeChanged: requestPaint()
     onWidthChanged: requestPaint()
     onHeightChanged: requestPaint()
 
     onPaint: {
       var ctx = getContext("2d")
       ctx.reset()
-      var pts = Model.seriesPoints(canvas.series, canvas.width, canvas.height, canvas.pad)
+      var pts = Model.seriesPoints(canvas.series, canvas.width, canvas.height, canvas.pad, canvas.endTime, canvas.boundsValue, canvas.interval)
       if (pts.length < 2) return
+
+      if (canvas.grid) {
+        var bounds = Model.seriesBounds(canvas.series, canvas.boundsValue)
+        ctx.strokeStyle = Qt.rgba(canvas.gridColor.r, canvas.gridColor.g, canvas.gridColor.b, 0.18)
+        ctx.lineWidth = 1
+        ctx.setLineDash([3, 3])
+        var ticks = Model.chartTimeTicks(canvas.series, canvas.range, canvas.endTime, canvas.interval)
+        for (var gx = 0; gx < ticks.length; gx++) {
+          var x = canvas.pad + ticks[gx].fraction * (canvas.width - canvas.pad * 2)
+          ctx.beginPath()
+          ctx.moveTo(x, canvas.pad)
+          ctx.lineTo(x, canvas.height - canvas.pad)
+          ctx.stroke()
+        }
+        for (var gy = 1; gy <= 3; gy++) {
+          var y = Model.valueToY(bounds.min + (bounds.max - bounds.min) * gy / 4, bounds, canvas.height, canvas.pad)
+          ctx.beginPath()
+          ctx.moveTo(canvas.pad, y)
+          ctx.lineTo(canvas.width - canvas.pad, y)
+          ctx.stroke()
+        }
+        ctx.setLineDash([])
+      }
 
       if (canvas.fill) {
         var gradient = ctx.createLinearGradient(0, 0, 0, canvas.height)
@@ -641,14 +689,14 @@ Panel {
         ctx.fill()
       }
 
-      var refY = Model.valueToY(canvas.referenceValue, Model.seriesBounds(canvas.series), canvas.height, canvas.pad)
+      var refY = Model.valueToY(canvas.referenceValue, Model.seriesBounds(canvas.series, canvas.boundsValue), canvas.height, canvas.pad)
       if (refY !== null) {
-        ctx.strokeStyle = Qt.rgba(canvas.lineColor.r, canvas.lineColor.g, canvas.lineColor.b, 0.35)
+        ctx.strokeStyle = Qt.rgba(canvas.referenceColor.r, canvas.referenceColor.g, canvas.referenceColor.b, 0.55)
         ctx.lineWidth = 1
         ctx.setLineDash([3, 3])
         ctx.beginPath()
-        ctx.moveTo(pts[0].x, refY)
-        ctx.lineTo(pts[pts.length - 1].x, refY)
+        ctx.moveTo(canvas.pad, refY)
+        ctx.lineTo(canvas.width - canvas.pad, refY)
         ctx.stroke()
         ctx.setLineDash([])
       }
@@ -993,6 +1041,11 @@ Panel {
                         height: Style.space(18)
                         visible: tickerRow.valid
                         series: tickerRow.modelData.series || []
+                        endTime: tickerRow.modelData.sessionEnd || 0
+                        interval: Model.intervalSeconds(Model.chartInterval("1d"))
+                        referenceValue: tickerRow.modelData.prevClose
+                        referenceColor: root.barForeground
+                        boundsValue: tickerRow.modelData.prevClose
                         lineColor: root.trendColor(tickerRow.modelData)
                         lineWidth: 1.25
                         pad: 1.5
@@ -1346,12 +1399,20 @@ Panel {
 
                 // Price chart.
                 Item {
+                  id: chartFrame
                   width: parent.width
                   height: Style.space(250)
+                  readonly property var bounds: Model.seriesBounds(root.detailSeries)
 
                   SeriesCanvas {
+                    id: detailChart
                     anchors.fill: parent
                     series: root.detailSeries
+                    endTime: root.chartEndFor(root.detailQuote)
+                    interval: Model.intervalSeconds(Model.chartInterval(root.activeRange))
+                    grid: true
+                    gridColor: root.barForeground
+                    range: root.activeRange
                     lineColor: root.trendColor(root.detailQuote)
                     lineWidth: 1.75
                     pad: 4
@@ -1360,15 +1421,31 @@ Panel {
                       ? root.detailQuote.prevClose : null
                   }
 
+                  Repeater {
+                    model: 3
+
+                    Text {
+                      textFormat: Text.PlainText
+                      required property int index
+                      readonly property var bounds: chartFrame.bounds
+                      readonly property real value: bounds
+                        ? bounds.min + (bounds.max - bounds.min) * (index + 1) / 4 : 0
+                      visible: root.detailSeries.length >= 2
+                      x: chartFrame.width - width - Style.space(4)
+                      y: bounds ? Model.valueToY(value, bounds, chartFrame.height, detailChart.pad) - height / 2 : 0
+                      text: bounds ? Model.formatPrice(value) : ""
+                      color: root.mutedForeground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+
                   Text {
                     textFormat: Text.PlainText
                     anchors.top: parent.top
                     anchors.right: parent.right
                     anchors.rightMargin: Style.space(4)
-                    text: {
-                      var bounds = Model.seriesBounds(root.detailSeries)
-                      return bounds ? Model.formatPrice(bounds.max) : ""
-                    }
+                    text: chartFrame.bounds ? Model.formatPrice(chartFrame.bounds.max) : ""
                     color: root.mutedForeground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -1378,10 +1455,7 @@ Panel {
                     anchors.bottom: parent.bottom
                     anchors.right: parent.right
                     anchors.rightMargin: Style.space(4)
-                    text: {
-                      var bounds = Model.seriesBounds(root.detailSeries)
-                      return bounds ? Model.formatPrice(bounds.min) : ""
-                    }
+                    text: chartFrame.bounds ? Model.formatPrice(chartFrame.bounds.min) : ""
                     color: root.mutedForeground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -1399,9 +1473,29 @@ Panel {
                 }
 
                 Item {
+                  id: timeAxis
                   width: parent.width
                   height: firstStamp.implicitHeight
                   visible: root.detailSeries.length >= 2
+                  readonly property var ticks: Model.chartTimeTicks(root.detailSeries, root.activeRange,
+                    root.chartEndFor(root.detailQuote), Model.intervalSeconds(Model.chartInterval(root.activeRange)))
+
+                  Repeater {
+                    model: timeAxis.ticks
+
+                    Text {
+                      textFormat: Text.PlainText
+                      required property var modelData
+                      // Keep the end labels readable instead of overlapping them.
+                      visible: modelData.fraction > 0.12 && modelData.fraction < 0.88
+                      text: root.formatStamp(modelData.t, root.activeRange)
+                      x: Math.max(0, Math.min(timeAxis.width - width,
+                        detailChart.pad + modelData.fraction * (timeAxis.width - detailChart.pad * 2) - width / 2))
+                      color: root.mutedForeground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
 
                   Text {
                     textFormat: Text.PlainText
@@ -1416,8 +1510,11 @@ Panel {
                   Text {
                     textFormat: Text.PlainText
                     anchors.right: parent.right
-                    text: root.detailSeries.length
-                      ? root.formatStamp(root.detailSeries[root.detailSeries.length - 1].t, root.activeRange) : ""
+                    text: {
+                      if (!root.detailSeries.length) return ""
+                      var end = root.chartEndFor(root.detailQuote)
+                      return root.formatStamp(end || root.detailSeries[root.detailSeries.length - 1].t, root.activeRange)
+                    }
                     color: root.mutedForeground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
