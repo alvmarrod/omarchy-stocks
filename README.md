@@ -41,6 +41,12 @@ Then click the bar label to open the app.
   of the app state.
 - Clicking `Open on TradingView ↗` opens the selected symbol's TradingView page.
 
+Drag between two points on the detail chart to measure the price change and
+percentage gain or loss over that interval. The highlighted area is green for
+a gain and red for a loss. Dragging in either direction compares the earlier
+price with the later price. Release to keep the measurement; click the chart
+to clear it. Changing ticker, range or currency clears the selection.
+
 Keyboard: `/` focuses search, `j`/`k` move the selection, `Delete` removes
 the selected ticker, `n` creates a watchlist, `r` renames it, `D` twice
 deletes it, `[`/`]` switch watchlists, `,`/`.` change the chart range, and

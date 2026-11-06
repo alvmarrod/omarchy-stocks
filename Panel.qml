@@ -7,6 +7,7 @@ import qs.Ui
 import "Model.js" as Model
 import "Store.js" as Store
 import "Search.js" as Search
+import "Selection.js" as Selection
 
 // Stocks app: a two-pane popup. The sidebar owns search + watchlists, the
 // detail pane shows the selected ticker. This file also owns the quote state
@@ -1403,6 +1404,20 @@ Panel {
                   width: parent.width
                   height: Style.space(250)
                   readonly property var bounds: Model.seriesBounds(root.detailSeries)
+                  readonly property var selectionSeries: root.detailSeries
+                  onSelectionSeriesChanged: clearSelection()
+                  property int selectionStart: -1
+                  property int selectionEnd: -1
+                  readonly property var points: Model.seriesPoints(root.detailSeries, width, height,
+                    detailChart.pad, detailChart.endTime, detailChart.boundsValue, detailChart.interval)
+                  readonly property var measurement: Selection.measurement(root.detailSeries, selectionStart, selectionEnd)
+                  readonly property color selectionColor: measurement ? root.signedColor(measurement.change) : root.barForeground
+                  readonly property real selectionLeft: measurement ? points[Math.min(selectionStart, selectionEnd)].x : 0
+                  readonly property real selectionRight: measurement ? points[Math.max(selectionStart, selectionEnd)].x : 0
+                  readonly property string selectionContext: root.selectedSymbol + ":" + root.activeRange + ":" + root.displayCurrency
+                  onSelectionContextChanged: clearSelection()
+                  function clearSelection() { selectionStart = -1; selectionEnd = -1 }
+
 
                   SeriesCanvas {
                     id: detailChart
@@ -1469,6 +1484,74 @@ Panel {
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
                     font.italic: true
+                  }
+                  // Selection follows the same sample positions as the chart, not wall-clock gaps.
+                  Rectangle {
+                    visible: chartFrame.measurement !== null
+                    x: chartFrame.selectionLeft
+                    width: chartFrame.selectionRight - x
+                    height: parent.height
+                    color: Qt.rgba(chartFrame.selectionColor.r, chartFrame.selectionColor.g, chartFrame.selectionColor.b, 0.12)
+                  }
+                  Repeater {
+                    model: chartFrame.measurement ? [chartFrame.selectionStart, chartFrame.selectionEnd] : []
+                    Item {
+                      required property int modelData
+                      x: chartFrame.points[modelData].x
+                      height: chartFrame.height
+                      Rectangle { width: 1; height: parent.height; color: chartFrame.selectionColor }
+                      Rectangle {
+                        x: -4; y: chartFrame.points[modelData].y - 4
+                        width: 8; height: 8; radius: 4
+                        color: chartFrame.selectionColor
+                      }
+                    }
+                  }
+                  Rectangle {
+                    visible: chartFrame.measurement !== null
+                    x: Style.space(8); y: Style.space(8)
+                    width: Math.min(parent.width - Style.space(16), selectionText.implicitWidth + Style.space(16))
+                    height: selectionText.implicitHeight + Style.space(12)
+                    color: Color.background
+                    radius: Style.space(4)
+                    border.color: chartFrame.selectionColor
+                    Text {
+                      id: selectionText
+                      anchors.fill: parent
+                      anchors.margins: Style.space(6)
+                      textFormat: Text.PlainText
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      color: chartFrame.selectionColor
+                      elide: Text.ElideRight
+                      text: {
+                        var m = chartFrame.measurement
+                        if (!m) return ""
+                        var change = (m.change > 0 ? "+" : (m.change < 0 ? "−" : "")) + Model.formatPrice(Math.abs(m.change))
+                        var percent = m.percent === null ? "—" : Model.formatSignedPercent2(m.percent)
+                        return change + " (" + percent + ") · " + root.currencyLabel(root.detailQuote)
+                          + "\n" + root.formatStamp(m.start.t, root.activeRange) + " → " + root.formatStamp(m.end.t, root.activeRange)
+                          + "\n" + Model.formatPrice(m.start.c) + " → " + Model.formatPrice(m.end.c)
+                      }
+                    }
+                  }
+                  MouseArea {
+                    anchors.fill: parent
+                    enabled: root.detailSeries.length >= 2
+                    cursorShape: Qt.CrossCursor
+                    preventStealing: true
+                    onPressed: function(mouse) {
+                      chartFrame.selectionStart = Selection.nearestIndex(chartFrame.points, mouse.x)
+                      chartFrame.selectionEnd = chartFrame.selectionStart
+                    }
+                    onPositionChanged: function(mouse) {
+                      if (pressed) chartFrame.selectionEnd = Selection.nearestIndex(chartFrame.points, mouse.x)
+                    }
+                    onReleased: function(mouse) {
+                      chartFrame.selectionEnd = Selection.nearestIndex(chartFrame.points, mouse.x)
+                      if (chartFrame.selectionEnd === chartFrame.selectionStart) chartFrame.clearSelection()
+                    }
+                    onCanceled: chartFrame.clearSelection()
                   }
                 }
 
