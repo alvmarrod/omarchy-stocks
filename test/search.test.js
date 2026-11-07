@@ -18,15 +18,17 @@ test("searchCommand: curl argv ends with the search URL", () => {
 })
 
 test("parseSearch: keeps name, exchange and type, de-duplicates, upper-cases symbols", () => {
-  const rows = Search.parseSearch(JSON.stringify({
-    quotes: [
-      { symbol: "aapl", shortname: "Apple Inc.", exchDisp: "NASDAQ", quoteType: "EQUITY" },
-      { symbol: "AAPL", longname: "Duplicate", exchDisp: "OTHER" },
-      { symbol: "APLE", longname: "Apple Hospitality", exchange: "NYQ", quoteType: "EQUITY" },
-      { shortname: "No symbol" },
-      null
-    ]
-  }))
+  const rows = Search.parseSearch(
+    JSON.stringify({
+      quotes: [
+        { symbol: "aapl", shortname: "Apple Inc.", exchDisp: "NASDAQ", quoteType: "EQUITY" },
+        { symbol: "AAPL", longname: "Duplicate", exchDisp: "OTHER" },
+        { symbol: "APLE", longname: "Apple Hospitality", exchange: "NYQ", quoteType: "EQUITY" },
+        { shortname: "No symbol" },
+        null
+      ]
+    })
+  )
   assert.deepEqual(rows, [
     { symbol: "AAPL", name: "Apple Inc.", exchange: "NASDAQ", type: "EQUITY" },
     { symbol: "APLE", name: "Apple Hospitality", exchange: "NYQ", type: "EQUITY" }

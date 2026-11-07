@@ -23,9 +23,7 @@ function normalizeName(value, fallback) {
 }
 
 function normalizeSymbols(value) {
-  var items = Array.isArray(value)
-    ? value
-    : String(value === undefined || value === null ? "" : value).split(/[\s,;]+/)
+  var items = Array.isArray(value) ? value : String(value === undefined || value === null ? "" : value).split(/[\s,;]+/)
   var seen = {}
   var out = []
   for (var i = 0; i < items.length; i++) {

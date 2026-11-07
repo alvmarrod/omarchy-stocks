@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dev dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Resolve base commit
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+            echo "sha=$(git rev-parse "refs/remotes/origin/${{ github.base_ref }}")" >> "$GITHUB_OUTPUT"
+          else
+            before="${{ github.event.before }}"
+            if [ -z "$before" ] || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+              before="$(git rev-parse HEAD^)"
+            fi
+            echo "sha=$before" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Repository hygiene
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          git diff --check "$BASE_SHA"...HEAD
+          if git grep -nE '^(<<<<<<< |>>>>>>> )' HEAD -- .; then
+            echo "Merge conflict markers found" >&2
+            exit 1
+          fi
+          if [ -n "$(git ls-files 'node_modules/*')" ]; then
+            echo "node_modules must not be committed" >&2
+            exit 1
+          fi
+
+      - name: JavaScript syntax
+        run: |
+          git ls-files -z '*.js' '*.mjs' | while IFS= read -r -d '' file; do
+            node --check "$file"
+          done
+
+      - name: Unit tests
+        run: node --test test/*.test.js
+
+      - name: Formatting
+        run: npm run format:check
+
+      - name: Release consistency
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          NO_RELEASE: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'no-release') }}
+        run: |
+          args=(--base "$BASE_SHA")
+          if [ "$NO_RELEASE" = "true" ]; then args+=(--no-release); fi
+          node scripts/check-release.mjs "${args[@]}"
+
+# QML type checks need an Omarchy/Quickshell environment and stay local:
+#   qmllint -I /usr/share/omarchy/shell Panel.qml
+#   qmllint -I /usr/share/omarchy/shell BarWidget.qml
+#   omarchy plugin validate "$PWD"

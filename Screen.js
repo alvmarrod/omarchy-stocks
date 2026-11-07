@@ -22,21 +22,33 @@ function cachePath() {
 
 function localDateKey(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    year: "numeric", month: "2-digit", day: "2-digit"
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
   }).formatToParts(date)
   const value = Object.fromEntries(parts.map(part => [part.type, part.value]))
   return `${value.year}-${value.month}-${value.day}`
 }
 
 function readCache(file = cachePath()) {
-  try { return JSON.parse(fs.readFileSync(file, "utf8")) } catch (_) { return null }
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"))
+  } catch (_) {
+    return null
+  }
 }
 
 function cacheIsFresh(cache, now = new Date()) {
   const coverage = cache && cache.coverage
-  return Boolean(cache && cache.schemaVersion === 2 && cache.dateKey === localDateKey(now) && Array.isArray(cache.stocks)
-    && !cache.error && !cache.warning
-    && (!coverage || (!coverage.historyErrors && !coverage.analystErrors)))
+  return Boolean(
+    cache &&
+    cache.schemaVersion === 2 &&
+    cache.dateKey === localDateKey(now) &&
+    Array.isArray(cache.stocks) &&
+    !cache.error &&
+    !cache.warning &&
+    (!coverage || (!coverage.historyErrors && !coverage.analystErrors))
+  )
 }
 
 function writeCache(data, file = cachePath()) {
@@ -55,26 +67,45 @@ function parseCsv(text) {
   for (let i = 0; i < text.length; i++) {
     const char = text[i]
     if (quoted) {
-      if (char === '"' && text[i + 1] === '"') { field += '"'; i++ }
-      else if (char === '"') quoted = false
+      if (char === '"' && text[i + 1] === '"') {
+        field += '"'
+        i++
+      } else if (char === '"') quoted = false
       else field += char
     } else if (char === '"') quoted = true
-    else if (char === ",") { row.push(field); field = "" }
-    else if (char === "\n") { row.push(field.replace(/\r$/, "")); rows.push(row); row = []; field = "" }
-    else field += char
+    else if (char === ",") {
+      row.push(field)
+      field = ""
+    } else if (char === "\n") {
+      row.push(field.replace(/\r$/, ""))
+      rows.push(row)
+      row = []
+      field = ""
+    } else field += char
   }
-  if (field || row.length) { row.push(field.replace(/\r$/, "")); rows.push(row) }
+  if (field || row.length) {
+    row.push(field.replace(/\r$/, ""))
+    rows.push(row)
+  }
   if (rows.length < 2) return []
   const headers = rows[0]
-  return rows.slice(1).filter(values => values.some(Boolean)).map(values => {
-    const item = {}
-    headers.forEach((header, index) => { item[header] = values[index] || "" })
-    return item
-  })
+  return rows
+    .slice(1)
+    .filter(values => values.some(Boolean))
+    .map(values => {
+      const item = {}
+      headers.forEach((header, index) => {
+        item[header] = values[index] || ""
+      })
+      return item
+    })
 }
 
 function yahooSymbol(symbol) {
-  return String(symbol || "").trim().toUpperCase().replace(/\./g, "-")
+  return String(symbol || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\./g, "-")
 }
 
 async function fetchJson(url, attempts = 3, extraHeaders = {}) {
@@ -108,8 +139,11 @@ async function mapLimit(items, limit, mapper) {
     while (true) {
       const index = next++
       if (index >= items.length) return
-      try { results[index] = await mapper(items[index], index) }
-      catch (error) { results[index] = { error: String(error && error.message || error) } }
+      try {
+        results[index] = await mapper(items[index], index)
+      } catch (error) {
+        results[index] = { error: String((error && error.message) || error) }
+      }
     }
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
@@ -179,10 +213,18 @@ function rsiIndicator(series) {
 
 function parseYahooHistory(data, constituent) {
   const result = data && data.chart && data.chart.result && data.chart.result[0]
-  if (!result) throw new Error(data && data.chart && data.chart.error && data.chart.error.description || "No chart data")
+  if (!result)
+    throw new Error((data && data.chart && data.chart.error && data.chart.error.description) || "No chart data")
   const timestamps = result.timestamp || []
-  const quoteCloses = result.indicators && result.indicators.quote && result.indicators.quote[0] && result.indicators.quote[0].close || []
-  const adjusted = result.indicators && result.indicators.adjclose && result.indicators.adjclose[0] && result.indicators.adjclose[0].adjclose || []
+  const quoteCloses =
+    (result.indicators && result.indicators.quote && result.indicators.quote[0] && result.indicators.quote[0].close) ||
+    []
+  const adjusted =
+    (result.indicators &&
+      result.indicators.adjclose &&
+      result.indicators.adjclose[0] &&
+      result.indicators.adjclose[0].adjclose) ||
+    []
   const cleanTimestamps = []
   const closes = []
   for (let i = 0; i < timestamps.length; i++) {
@@ -200,10 +242,15 @@ function parseYahooHistory(data, constituent) {
   const ema5y = ema200Series.at(-(SESSION_5Y + 1))
   const weekly = weeklySeries(cleanTimestamps, closes)
   return {
-    symbol: yahooSymbol(constituent.Symbol), name: constituent.Security || constituent.Symbol,
-    price: latestPrice, ema200, ema20d, ema5y,
+    symbol: yahooSymbol(constituent.Symbol),
+    name: constituent.Security || constituent.Symbol,
+    price: latestPrice,
+    ema200,
+    ema20d,
+    ema5y,
     asOf: new Date(cleanTimestamps.at(-1) * 1000).toISOString().slice(0, 10),
-    macd: macdIndicator(weekly), rsi: rsiIndicator(weekly),
+    macd: macdIndicator(weekly),
+    rsi: rsiIndicator(weekly),
     technicalPass: latestPrice > ema200 && ema200 > ema20d && ema200 > ema5y
   }
 }
@@ -216,12 +263,15 @@ async function fetchHistory(constituent) {
 
 async function createYahooSession() {
   const response = await fetch("https://fc.yahoo.com/", {
-    headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(15000), redirect: "manual"
+    headers: { "user-agent": USER_AGENT },
+    signal: AbortSignal.timeout(15000),
+    redirect: "manual"
   })
   const cookie = String(response.headers.get("set-cookie") || "").split(";")[0]
   if (!cookie) throw new Error("Yahoo session cookie unavailable")
   const crumbResponse = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
-    headers: { "user-agent": USER_AGENT, cookie }, signal: AbortSignal.timeout(15000)
+    headers: { "user-agent": USER_AGENT, cookie },
+    signal: AbortSignal.timeout(15000)
   })
   if (!crumbResponse.ok) throw new Error(`Yahoo session HTTP ${crumbResponse.status}`)
   const crumb = (await crumbResponse.text()).trim()
@@ -230,21 +280,34 @@ async function createYahooSession() {
 }
 
 async function fetchAnalysts(stock, session) {
-  const url = "https://query1.finance.yahoo.com/v10/finance/quoteSummary/"
-    + `${encodeURIComponent(stock.symbol)}?modules=financialData,price&crumb=${encodeURIComponent(session.crumb)}`
+  const url =
+    "https://query1.finance.yahoo.com/v10/finance/quoteSummary/" +
+    `${encodeURIComponent(stock.symbol)}?modules=financialData,price&crumb=${encodeURIComponent(session.crumb)}`
   const data = await fetchJson(url, 3, { cookie: session.cookie })
-  const financial = data && data.quoteSummary && data.quoteSummary.result && data.quoteSummary.result[0]
-    && data.quoteSummary.result[0].financialData
-  const priceData = data && data.quoteSummary && data.quoteSummary.result && data.quoteSummary.result[0]
-    && data.quoteSummary.result[0].price
+  const financial =
+    data &&
+    data.quoteSummary &&
+    data.quoteSummary.result &&
+    data.quoteSummary.result[0] &&
+    data.quoteSummary.result[0].financialData
+  const priceData =
+    data &&
+    data.quoteSummary &&
+    data.quoteSummary.result &&
+    data.quoteSummary.result[0] &&
+    data.quoteSummary.result[0].price
   if (!financial) return { unavailable: true }
   const target = Number(financial.targetMeanPrice && financial.targetMeanPrice.raw)
   const analystCount = Number(financial.numberOfAnalystOpinions && financial.numberOfAnalystOpinions.raw)
   if (!Number.isFinite(target)) return { unavailable: true }
   const marketCap = Number(priceData && priceData.marketCap && priceData.marketCap.raw)
-  return { ...stock, target, analystCount: Number.isFinite(analystCount) ? analystCount : 0,
+  return {
+    ...stock,
+    target,
+    analystCount: Number.isFinite(analystCount) ? analystCount : 0,
     marketCap: Number.isFinite(marketCap) ? marketCap : null,
-    targetUpsidePct: (target / stock.price - 1) * 100 }
+    targetUpsidePct: (target / stock.price - 1) * 100
+  }
 }
 
 async function runScreen() {
@@ -264,16 +327,24 @@ async function runScreen() {
   const analystUnavailable = analystRows.filter(stock => stock && stock.unavailable).length
   const analystErrors = analystRows.filter(stock => stock && stock.error).length
   if (historyErrors || analystErrors) {
-    throw new Error([historyErrors ? `${historyErrors} price histories` : "",
-      analystErrors ? `${analystErrors} analyst targets` : ""].filter(Boolean).join(" and ") + " could not be fetched")
+    throw new Error(
+      [historyErrors ? `${historyErrors} price histories` : "", analystErrors ? `${analystErrors} analyst targets` : ""]
+        .filter(Boolean)
+        .join(" and ") + " could not be fetched"
+    )
   }
-  const stocks = validAnalysts.filter(stock => stock.targetUpsidePct > 20)
+  const stocks = validAnalysts
+    .filter(stock => stock.targetUpsidePct > 20)
     .sort((a, b) => b.targetUpsidePct - a.targetUpsidePct)
     .map(stock => {
       const { technicalPass, targetUpsidePct, ...row } = stock
       return row
     })
-  const asOf = validHistories.map(stock => stock.asOf).sort().at(-1) || localDateKey()
+  const asOf =
+    validHistories
+      .map(stock => stock.asOf)
+      .sort()
+      .at(-1) || localDateKey()
   return {
     schemaVersion: 2,
     dateKey: localDateKey(),
@@ -306,12 +377,17 @@ async function main() {
     writeCache(result, file)
     process.stdout.write(JSON.stringify(result))
   } catch (error) {
-    if (cached && Array.isArray(cached.stocks) && !cached.error && !cached.warning
-        && (!cached.coverage || (!cached.coverage.historyErrors && !cached.coverage.analystErrors))) {
-      process.stdout.write(JSON.stringify({ ...cached, stale: true, error: String(error && error.message || error) }))
+    if (
+      cached &&
+      Array.isArray(cached.stocks) &&
+      !cached.error &&
+      !cached.warning &&
+      (!cached.coverage || (!cached.coverage.historyErrors && !cached.coverage.analystErrors))
+    ) {
+      process.stdout.write(JSON.stringify({ ...cached, stale: true, error: String((error && error.message) || error) }))
       return
     }
-    process.stdout.write(JSON.stringify({ stocks: [], error: String(error && error.message || error) }))
+    process.stdout.write(JSON.stringify({ stocks: [], error: String((error && error.message) || error) }))
     process.exitCode = 1
   }
 }
@@ -319,6 +395,14 @@ async function main() {
 if (require.main === module) main()
 
 module.exports = {
-  parseCsv, yahooSymbol, ema, weeklySeries, macdIndicator, rsiIndicator,
-  parseYahooHistory, localDateKey, cacheIsFresh, mapLimit
+  parseCsv,
+  yahooSymbol,
+  ema,
+  weeklySeries,
+  macdIndicator,
+  rsiIndicator,
+  parseYahooHistory,
+  localDateKey,
+  cacheIsFresh,
+  mapLimit
 }
