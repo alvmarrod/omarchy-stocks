@@ -10,11 +10,17 @@ test("searchUrl: encodes the query and asks for quotes only", () => {
   assert.equal(Search.searchUrl("   "), "")
 })
 
-test("searchCommand: curl argv ends with the search URL", () => {
+test("searchCommand: capped curl argv ends with the search URL", () => {
   const command = Search.searchCommand("AAPL", "ua")
-  assert.equal(command[0], "curl")
+  assert.deepEqual(command.slice(0, 4), [
+    "bash",
+    "-c",
+    `set -o pipefail; curl "$@" | head -c ${Search.MAX_RESPONSE_BYTES}`,
+    "curl"
+  ])
   assert.equal(command[command.length - 1], Search.searchUrl("AAPL"))
   assert.ok(command.includes("ua"))
+  assert.ok(command.includes("--max-filesize"))
 })
 
 test("parseSearch: keeps name, exchange and type, de-duplicates, upper-cases symbols", () => {

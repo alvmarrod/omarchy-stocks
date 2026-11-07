@@ -4,6 +4,9 @@
 var VERSION = 1
 var DEFAULT_NAME = "My Stocks"
 var RANGES = ["1d", "5d", "1mo", "6mo", "1y"]
+// Matches Model.MAX_FETCH_SYMBOLS: 30 worst-case 1d payloads fit the 1 MiB
+// response cap.
+var MAX_SYMBOLS = 30
 
 function trimString(value) {
   return value === undefined || value === null ? "" : String(value).trim()
@@ -215,7 +218,10 @@ function addSymbol(state, symbol) {
   var next = copyState(state)
   var list = activeWatchlist(next)
   if (!list) return state
-  if (list.symbols.indexOf(value) === -1) list.symbols.push(value)
+  if (list.symbols.indexOf(value) === -1) {
+    if (list.symbols.length >= MAX_SYMBOLS) return state
+    list.symbols.push(value)
+  }
   next.selectedSymbol = value
   return next
 }
@@ -265,6 +271,7 @@ if (typeof module !== "undefined") {
     VERSION: VERSION,
     DEFAULT_NAME: DEFAULT_NAME,
     RANGES: RANGES,
+    MAX_SYMBOLS: MAX_SYMBOLS,
     newId: newId,
     normalizeName: normalizeName,
     normalizeSymbols: normalizeSymbols,

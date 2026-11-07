@@ -12,8 +12,24 @@ function searchUrl(query) {
   return SEARCH_URL + "?q=" + encodeURIComponent(q) + "&quotesCount=12&newsCount=0&listsCount=0"
 }
 
+// Same 1 MiB stdout cap as the quote fetch: search responses are ~3 KB, but
+// a hostile body must not be buffered in the shell.
+var MAX_RESPONSE_BYTES = 1024 * 1024
+
 function searchCommand(query, userAgent) {
-  return ["curl", "-sS", "--max-time", "10", "-A", String(userAgent || "omarchy-stocks"), "-w", "\n", searchUrl(query)]
+  var args = [
+    "-sS",
+    "--max-time",
+    "10",
+    "--max-filesize",
+    String(MAX_RESPONSE_BYTES),
+    "-A",
+    String(userAgent || "omarchy-stocks"),
+    "-w",
+    "\n",
+    searchUrl(query)
+  ]
+  return ["bash", "-c", 'set -o pipefail; curl "$@" | head -c ' + MAX_RESPONSE_BYTES, "curl"].concat(args)
 }
 
 function parseSearch(text) {
@@ -46,6 +62,7 @@ function parseSearch(text) {
 if (typeof module !== "undefined") {
   module.exports = {
     SEARCH_URL: SEARCH_URL,
+    MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES,
     searchUrl: searchUrl,
     searchCommand: searchCommand,
     parseSearch: parseSearch

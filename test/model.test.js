@@ -107,11 +107,42 @@ test("chartUrl: encodes the symbol into the v8 chart endpoint", () => {
   )
 })
 
-test("curlCommand: one curl, one URL per symbol, newline write-out, custom UA", () => {
+test("curlCommand: one capped curl, one URL per symbol, newline write-out, custom UA", () => {
   const cmd = Model.curlCommand(["AAPL", "BTC-USD"], "test-agent/1.0")
-  assert.deepEqual(cmd.slice(0, 8), ["curl", "-sS", "--max-time", "10", "-A", "test-agent/1.0", "-w", "\n"])
-  assert.deepEqual(cmd.slice(8), [Model.chartUrl("AAPL"), Model.chartUrl("BTC-USD")])
-  assert.deepEqual(Model.curlCommand(["AAPL"], "ua", "6mo").slice(8), [Model.chartUrl("AAPL", "6mo")])
+  assert.deepEqual(cmd.slice(0, 4), [
+    "bash",
+    "-c",
+    `set -o pipefail; curl "$@" | head -c ${Model.MAX_RESPONSE_BYTES}`,
+    "curl"
+  ])
+  assert.deepEqual(cmd.slice(4, 13), [
+    "-sS",
+    "--max-time",
+    "10",
+    "--max-filesize",
+    String(Model.MAX_RESPONSE_BYTES),
+    "-A",
+    "test-agent/1.0",
+    "-w",
+    "\n"
+  ])
+  assert.deepEqual(cmd.slice(13), [Model.chartUrl("AAPL"), Model.chartUrl("BTC-USD")])
+  assert.deepEqual(Model.curlCommand(["AAPL"], "ua", "6mo").slice(13), [Model.chartUrl("AAPL", "6mo")])
+})
+
+test("fetchSymbols: selected first, deduped, capped at the fetch budget", () => {
+  assert.equal(Model.MAX_RESPONSE_BYTES, 1024 * 1024)
+  assert.equal(Model.MAX_FETCH_SYMBOLS, 30)
+  const many = Array.from({ length: 40 }, (_, index) => "S" + index)
+  const capped = Model.fetchSymbols(many, "S35")
+  assert.equal(capped.length, Model.MAX_FETCH_SYMBOLS)
+  assert.equal(capped[0], "S35")
+  assert.equal(capped[1], "S0")
+  assert.equal(new Set(capped).size, capped.length)
+  const few = ["AAPL", "MSFT"]
+  assert.deepEqual(Model.fetchSymbols(few, "MSFT"), ["MSFT", "AAPL"])
+  assert.deepEqual(Model.fetchSymbols(few, "NOPE"), ["AAPL", "MSFT"])
+  assert.deepEqual(Model.fetchSymbols([], "AAPL"), [])
 })
 
 test("longTermIndicatorCommand: requests five years of weekly closes", () => {
@@ -119,10 +150,9 @@ test("longTermIndicatorCommand: requests five years of weekly closes", () => {
     Model.longTermChartUrl("^GSPC"),
     "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=5y&interval=1wk"
   )
-  assert.deepEqual(Model.longTermIndicatorCommand(["AAPL", "NVDA"], "ua").slice(8), [
-    Model.longTermChartUrl("AAPL"),
-    Model.longTermChartUrl("NVDA")
-  ])
+  const cmd = Model.longTermIndicatorCommand(["AAPL", "NVDA"], "ua")
+  assert.equal(cmd[2], `set -o pipefail; curl "$@" | head -c ${Model.MAX_RESPONSE_BYTES}`)
+  assert.deepEqual(cmd.slice(13), [Model.longTermChartUrl("AAPL"), Model.longTermChartUrl("NVDA")])
 })
 
 test("tradingViewSymbol / tradingViewUrl / shellQuote", () => {

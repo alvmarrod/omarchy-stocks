@@ -38,6 +38,8 @@ Panel {
 
   // ---- Quotes, chart and FX ----------------------------------------------
   property var quotes: []
+  property var fetchRequested: []
+  property bool fetchPending: false
   property var chartSeries: ({})
   property real chartSeriesEnd: 0
   property string chartSeriesRange: ""
@@ -51,7 +53,7 @@ Panel {
   property double lastUpdated: 0
   property int retries: 0
 
-  readonly property string userAgent: "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.2.0"
+  readonly property string userAgent: "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.2.1"
   readonly property bool loading: quotes.length === 0 && fetchError === ""
   readonly property var shownQuotes: Model.convertAll(quotes, displayCurrency, rates)
 
@@ -292,11 +294,22 @@ Panel {
     if (searchProc.running) searchProc.running = false
   }
 
-  function addResult(result) {
-    if (!result || !result.symbol) return
-    root.commit(Store.addSymbol(root.store, result.symbol))
+  function addSymbol(symbol) {
+    var value = Model.normalizeSymbols([symbol], [])[0]
+    if (!value) return false
+    if (root.symbols.indexOf(value) === -1 && root.symbols.length >= Store.MAX_SYMBOLS) {
+      root.searchError = "Watchlist limit is " + Store.MAX_SYMBOLS + " symbols"
+      return false
+    }
+    root.commit(Store.addSymbol(root.store, value))
     root.clearSearch()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    return true
+  }
+
+  function addResult(result) {
+    if (!result || !result.symbol) return
+    root.addSymbol(result.symbol)
   }
 
   function submitSearch() {
@@ -305,10 +318,7 @@ Panel {
       return
     }
     var raw = root.searchText.trim().toUpperCase()
-    if (/^[A-Z0-9.^=-]+$/.test(raw)) {
-      root.commit(Store.addSymbol(root.store, raw))
-      root.clearSearch()
-    }
+    if (/^[A-Z0-9.^=-]+$/.test(raw)) root.addSymbol(raw)
   }
 
   // ---- Fetching -----------------------------------------------------------
@@ -320,11 +330,13 @@ Panel {
 
   function startFetch() {
     if (fetchProc.running) return
-    if (root.symbols.length === 0) {
+    var requested = Model.fetchSymbols(root.symbols, root.selectedSymbol)
+    if (requested.length === 0) {
       root.quotes = []
       return
     }
-    fetchProc.command = Model.curlCommand(root.symbols, root.userAgent, "1d")
+    root.fetchRequested = requested
+    fetchProc.command = Model.curlCommand(requested, root.userAgent, "1d")
     fetchProc.running = true
   }
 
@@ -335,7 +347,8 @@ Panel {
       root.scheduleRetry()
       return
     }
-    var parsed = Model.parseQuoteLines(raw, root.symbols)
+    var requested = root.fetchRequested.length > 0 ? root.fetchRequested : root.symbols
+    var parsed = Model.parseQuoteLines(raw, requested)
     root.quotes = parsed
     if (Model.validCount(parsed) === 0) {
       root.fetchError = "No data from Yahoo Finance"
@@ -480,6 +493,8 @@ Panel {
 
   onSymbolsKeyChanged: {
     root.quotes = []
+    root.fetchRequested = []
+    root.fetchPending = false
     root.chartSeries = {}
     root.chartSeriesEnd = 0
     root.chartSeriesRange = ""
@@ -497,6 +512,10 @@ Panel {
     root.chartSeriesEnd = 0
     root.chartSeriesRange = ""
     if (root.opened) Qt.callLater(function() { root.ensureChartSeries(true) })
+    if (root.selectedSymbol !== "" && root.quoteFor(root.selectedSymbol) === null) {
+      if (fetchProc.running) root.fetchPending = true
+      else Qt.callLater(root.startFetch)
+    }
   }
 
   onActiveRangeChanged: if (root.opened) root.ensureChartSeries(true)
@@ -519,6 +538,12 @@ Panel {
       onStreamFinished: {
         var message = String(text || "").split("\n")[0].replace(/^curl:\s*\(\d+\)\s*/, "").trim()
         if (message !== "" && root.fetchError !== "" && root.quotes.length === 0) root.fetchError = message
+      }
+    }
+    onExited: {
+      if (root.fetchPending) {
+        root.fetchPending = false
+        Qt.callLater(root.startFetch)
       }
     }
   }

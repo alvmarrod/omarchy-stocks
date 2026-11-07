@@ -2,6 +2,17 @@
 
 All notable changes to this plugin are documented here.
 
+## [1.2.1] - 2026-11-07
+
+### Fixed
+
+- Cap external responses at 1 MiB (`--max-filesize` plus a streamed `head -c`) and limit multi-symbol quote fetches to 30 symbols, so a compromised or oversized response cannot buffer unbounded data in the shell.
+- Selecting a symbol that was not part of the last fetch now refreshes it immediately with the selected symbol prioritized.
+
+### Changed
+
+- Watchlists are limited to 30 symbols; adding a 31st shows a warning and is rejected.
+
 ## [1.2.0] - 2026-11-07
 
 ### Added
