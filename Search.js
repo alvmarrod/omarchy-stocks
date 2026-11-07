@@ -13,12 +13,7 @@ function searchUrl(query) {
 }
 
 function searchCommand(query, userAgent) {
-  return [
-    "curl", "-sS", "--max-time", "10",
-    "-A", String(userAgent || "omarchy-stocks"),
-    "-w", "\n",
-    searchUrl(query)
-  ]
+  return ["curl", "-sS", "--max-time", "10", "-A", String(userAgent || "omarchy-stocks"), "-w", "\n", searchUrl(query)]
 }
 
 function parseSearch(text) {

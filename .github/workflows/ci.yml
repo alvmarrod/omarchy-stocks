@@ -1,0 +1,182 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dev dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Resolve base commit
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+            echo "sha=$(git rev-parse "refs/remotes/origin/${{ github.base_ref }}")" >> "$GITHUB_OUTPUT"
+          else
+            before="${{ github.event.before }}"
+            if [ -z "$before" ] || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+              before="$(git rev-parse HEAD^)"
+            fi
+            echo "sha=$before" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Repository hygiene
+        id: hygiene
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          work="${RUNNER_TEMP}/ci"
+          mkdir -p "$work"
+          status=0
+          {
+            git diff --check "$BASE_SHA"...HEAD || status=1
+            if git grep -nE '^(<<<<<<< |>>>>>>> )' HEAD -- .; then
+              echo "Merge conflict markers found" >&2
+              status=1
+            fi
+            if [ -n "$(git ls-files 'node_modules/*')" ]; then
+              echo "node_modules must not be committed" >&2
+              status=1
+            fi
+          } > "$work/hygiene.log" 2>&1
+          cat "$work/hygiene.log"
+          echo "$status" > "$work/hygiene.status"
+          exit "$status"
+
+      - name: JavaScript syntax
+        id: syntax
+        continue-on-error: true
+        run: |
+          work="${RUNNER_TEMP}/ci"
+          mkdir -p "$work"
+          set +e
+          {
+            git ls-files -z '*.js' '*.mjs' | while IFS= read -r -d '' file; do
+              node --check "$file" || exit 1
+            done
+          } > "$work/syntax.log" 2>&1
+          status=$?
+          cat "$work/syntax.log"
+          echo "$status" > "$work/syntax.status"
+          exit "$status"
+
+      - name: Unit tests
+        id: tests
+        continue-on-error: true
+        run: |
+          work="${RUNNER_TEMP}/ci"
+          mkdir -p "$work"
+          set +e
+          node --test test/*.test.js > "$work/tests.log" 2>&1
+          status=$?
+          cat "$work/tests.log"
+          echo "$status" > "$work/tests.status"
+          exit "$status"
+
+      - name: Formatting
+        id: format
+        continue-on-error: true
+        run: |
+          work="${RUNNER_TEMP}/ci"
+          mkdir -p "$work"
+          set +e
+          npm run format:check > "$work/format.log" 2>&1
+          status=$?
+          cat "$work/format.log"
+          echo "$status" > "$work/format.status"
+          exit "$status"
+
+      - name: Release consistency
+        id: release
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          NO_RELEASE: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'no-release') }}
+        run: |
+          work="${RUNNER_TEMP}/ci"
+          mkdir -p "$work"
+          set +e
+          args=(--base "$BASE_SHA")
+          if [ "$NO_RELEASE" = "true" ]; then args+=(--no-release); fi
+          node scripts/check-release.mjs "${args[@]}" > "$work/release.log" 2>&1
+          status=$?
+          cat "$work/release.log"
+          echo "$status" > "$work/release.status"
+          exit "$status"
+
+      - name: Run summary
+        if: always()
+        run: |
+          summary="$GITHUB_STEP_SUMMARY"
+          failed=0
+          echo "## CI checks" >> "$summary"
+          echo "" >> "$summary"
+          checks=(
+            "hygiene|Repository hygiene"
+            "syntax|JavaScript syntax"
+            "tests|Unit tests"
+            "format|Formatting"
+            "release|Release consistency"
+          )
+          for entry in "${checks[@]}"; do
+            key="${entry%%|*}"
+            label="${entry#*|}"
+            status_file="${RUNNER_TEMP}/ci/${key}.status"
+            log_file="${RUNNER_TEMP}/ci/${key}.log"
+            if [ -f "$status_file" ] && [ "$(cat "$status_file")" = "0" ]; then
+              echo "- ✅ ${label}" >> "$summary"
+            else
+              failed=1
+              echo "- ❌ ${label}" >> "$summary"
+              if [ -f "$log_file" ]; then
+                echo "" >> "$summary"
+                echo "<details><summary>${label} output</summary>" >> "$summary"
+                echo "" >> "$summary"
+                echo '```' >> "$summary"
+                tail -n 40 "$log_file" >> "$summary"
+                echo '```' >> "$summary"
+                echo "</details>" >> "$summary"
+                echo "" >> "$summary"
+              fi
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "Fix the failed checks above and push again." >> "$summary"
+          fi
+          cat "$summary"
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+
+# QML type checks need an Omarchy/Quickshell environment and stay local:
+#   qmllint -I /usr/share/omarchy/shell Panel.qml
+#   qmllint -I /usr/share/omarchy/shell BarWidget.qml
+#   omarchy plugin validate "$PWD"
