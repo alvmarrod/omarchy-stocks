@@ -2,6 +2,12 @@
 
 All notable changes to this plugin are documented here.
 
+## [1.2.0] - 2026-11-07
+
+### Added
+
+- Drag across the detail chart to measure chronological price and percentage changes, with gain/loss shading and endpoint prices and dates. Click to clear the selection.
+
 ## [1.1.0] - 2026-11-07
 
 ### Added

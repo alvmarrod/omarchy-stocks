@@ -51,7 +51,7 @@ Panel {
   property double lastUpdated: 0
   property int retries: 0
 
-  readonly property string userAgent: "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.1.0"
+  readonly property string userAgent: "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.2.0"
   readonly property bool loading: quotes.length === 0 && fetchError === ""
   readonly property var shownQuotes: Model.convertAll(quotes, displayCurrency, rates)
 
