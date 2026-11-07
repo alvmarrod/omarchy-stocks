@@ -76,7 +76,7 @@ jobs:
       - name: Release consistency
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
-          NO_RELEASE: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'no-release') }}
+          NO_RELEASE: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'no-release') }}
         run: |
           args=(--base "$BASE_SHA")
           if [ "$NO_RELEASE" = "true" ]; then args+=(--no-release); fi
