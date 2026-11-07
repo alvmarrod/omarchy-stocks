@@ -53,6 +53,18 @@ var CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 var CHART_RANGES = ["1d", "5d", "1mo", "6mo", "1y"]
 var CHART_INTERVALS = { "1d": "5m", "5d": "15m", "1mo": "1d", "6mo": "1d", "1y": "1wk" }
 
+// A fetched series may legitimately cross weekends, holidays, time zones and
+// session edges, but never more than this. Anything beyond is bad data.
+var MAX_SERIES_SPAN = {
+  "1d": 2 * 86400,
+  "5d": 14 * 86400,
+  "1mo": 45 * 86400,
+  "6mo": 220 * 86400,
+  "1y": 400 * 86400
+}
+var MAX_TIMESTAMP = 4102444800 // 2100-01-01T00:00:00Z
+var MAX_TIME_TICKS = 24
+
 function chartRange(value, fallback) {
   var d = fallback === undefined || fallback === null ? "1d" : fallback
   var r = trimString(value).toLowerCase()
@@ -200,18 +212,25 @@ function emptyQuote(symbol, error) {
 }
 
 // timestamp[] + indicators.quote[0].close[] -> [{t, c}], nulls skipped
-// (Yahoo leaves the in-progress bar and market holidays as null).
-function parseSeries(result) {
+// (Yahoo leaves the in-progress bar and market holidays as null). The series
+// is rejected when a timestamp is impossible or the whole span is larger than
+// the requested range could legitimately cover: one bad response must not be
+// able to drive unbounded chart work.
+function parseSeries(result, range) {
   var stamps = result && result.timestamp ? result.timestamp : []
   var quoteBlock = result && result.indicators && result.indicators.quote ? result.indicators.quote[0] : null
   var closes = quoteBlock && quoteBlock.close ? quoteBlock.close : []
+  var maxSpan = MAX_SERIES_SPAN[chartRange(range)]
   var out = []
   for (var i = 0; i < stamps.length && i < closes.length; i++) {
     var t = toNumber(stamps[i])
     var c = toNumber(closes[i])
     if (t === null || c === null) continue
+    if (!isFinite(t) || t < 0 || t > MAX_TIMESTAMP) return []
+    if (out.length && t < out[out.length - 1].t) return []
     out.push({ t: t, c: c })
   }
+  if (out.length > 1 && out[out.length - 1].t - out[0].t > maxSpan) return []
   return out
 }
 
@@ -226,7 +245,7 @@ function firstOpen(result) {
 }
 
 // One line of curl output -> Quote. Never throws.
-function parseChartResponse(line) {
+function parseChartResponse(line, range) {
   var raw = trimString(line)
   if (raw === "") return emptyQuote("", "No data")
 
@@ -271,15 +290,15 @@ function parseChartResponse(line) {
   quote.marketTime = toNumber(meta.regularMarketTime)
   quote.open = firstOpen(result)
   quote.volume = toNumber(meta.regularMarketVolume)
-  quote.series = parseSeries(result)
-  quote.sessionEnd = seriesEndTime(quote.series, meta.currentTradingPeriod && meta.currentTradingPeriod.regular)
+  quote.series = parseSeries(result, range)
+  quote.sessionEnd = seriesEndTime(quote.series, meta.currentTradingPeriod && meta.currentTradingPeriod.regular, range)
   return quote
 }
 
 // Chart-range fetch -> { series: { SYM: series }, ends: { SYM: sessionEnd } }.
 // Reuses parseQuoteLines for the symbol/position matching.
-function parseSeriesLines(text, symbols) {
-  var quotes = parseQuoteLines(text, symbols)
+function parseSeriesLines(text, symbols, range) {
+  var quotes = parseQuoteLines(text, symbols, range)
   var series = {}
   var ends = {}
   for (var i = 0; i < quotes.length; i++) {
@@ -293,7 +312,7 @@ function parseSeriesLines(text, symbols) {
 // Successful lines are matched by symbol; error lines carry no symbol, so
 // they are attributed by position when curl produced exactly one line per
 // symbol. Anything unmatched becomes a "No data" quote.
-function parseQuoteLines(text, symbols) {
+function parseQuoteLines(text, symbols, range) {
   var lines = String(text || "").split("\n")
   if (lines.length && lines[lines.length - 1] === "") lines.pop()
 
@@ -301,7 +320,7 @@ function parseQuoteLines(text, symbols) {
   var bySymbol = {}
   var byIndex = []
   for (var i = 0; i < lines.length; i++) {
-    var parsed = parseChartResponse(lines[i])
+    var parsed = parseChartResponse(lines[i], range)
     byIndex.push(parsed)
     if (!parsed.error && parsed.symbol) bySymbol[parsed.symbol.toUpperCase()] = parsed
   }
@@ -688,13 +707,15 @@ function scaleY(value, bounds, height, padding) {
 // Right edge for an in-progress intraday chart: the regular session's close
 // when the last bar belongs to that session, else null. Yahoo may report the
 // next session on a closed market; filling the data is then the safe choice.
-function seriesEndTime(series, period) {
+function seriesEndTime(series, period, range) {
   var list = series || []
   var start = period ? toNumber(period.start) : null
   var end = period ? toNumber(period.end) : null
   if (!list.length || start === null || end === null) return null
+  if (!isFinite(start) || !isFinite(end) || start < 0 || end > MAX_TIMESTAMP || end < start) return null
   var last = list[list.length - 1].t
-  return last >= start && last <= end ? end : null
+  var maxSpan = MAX_SERIES_SPAN[chartRange(range)]
+  return last >= start && last <= end && end - last <= maxSpan ? end : null
 }
 
 // One equal x-slot per bar, so closed-market time (overnight, weekends,
@@ -758,8 +779,17 @@ function chartTimeTicks(series, range, endTime, interval) {
     var last = list[list.length - 1].t
     var close = toNumber(endTime)
     var endWall = close !== null && close > last ? close : last
-    for (var t = Math.floor(list[0].t / 3600) * 3600 + 3600; t < endWall; t += 3600)
-      out.push({ t: t, fraction: slotFraction(t, list, slots, interval) })
+    var start = list[0].t
+    var previous = 0
+    // Walk the received samples and emit at most one guide per hour that
+    // actually has data. The count is bounded by the samples, never by the
+    // span the response claims.
+    for (i = 0; i < list.length && out.length < MAX_TIME_TICKS; i++) {
+      var boundary = Math.ceil(list[i].t / 3600) * 3600
+      if (boundary <= start || boundary >= endWall || boundary <= previous) continue
+      previous = boundary
+      out.push({ t: boundary, fraction: slotFraction(boundary, list, slots, interval) })
+    }
     return out
   }
   if (range !== "5d") {
@@ -775,6 +805,7 @@ function chartTimeTicks(series, range, endTime, interval) {
   }
   var day = null
   for (i = 0; i < list.length; i++) {
+    if (out.length >= MAX_TIME_TICKS) break
     var key = Math.floor(list[i].t / 86400)
     if (day !== null && key !== day) out.push({ t: list[i].t, fraction: i / slots })
     day = key
@@ -917,7 +948,7 @@ function parseRateLines(text, pairs) {
   var bySymbol = {}
   var byIndex = []
   for (var i = 0; i < lines.length; i++) {
-    var quote = parseChartResponse(lines[i])
+    var quote = parseChartResponse(lines[i], "1d")
     byIndex.push(quote)
     if (isValid(quote)) bySymbol[quote.symbol.toUpperCase()] = quote.price
   }
@@ -1040,6 +1071,9 @@ if (typeof module !== "undefined") {
     verticalLabel: verticalLabel,
     loadingLabel: loadingLabel,
     CHART_RANGES: CHART_RANGES,
+    MAX_SERIES_SPAN: MAX_SERIES_SPAN,
+    MAX_TIMESTAMP: MAX_TIMESTAMP,
+    MAX_TIME_TICKS: MAX_TIME_TICKS,
     chartRange: chartRange,
     chartInterval: chartInterval,
     tickerWidth: tickerWidth,

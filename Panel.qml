@@ -53,7 +53,7 @@ Panel {
   property double lastUpdated: 0
   property int retries: 0
 
-  readonly property string userAgent: "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.2.1"
+  readonly property string userAgent: "Mozilla/5.0 (X11; Linux x86_64) omarchy-stocks/1.2.2"
   readonly property bool loading: quotes.length === 0 && fetchError === ""
   readonly property var shownQuotes: Model.convertAll(quotes, displayCurrency, rates)
 
@@ -348,7 +348,7 @@ Panel {
       return
     }
     var requested = root.fetchRequested.length > 0 ? root.fetchRequested : root.symbols
-    var parsed = Model.parseQuoteLines(raw, requested)
+    var parsed = Model.parseQuoteLines(raw, requested, "1d")
     root.quotes = parsed
     if (Model.validCount(parsed) === 0) {
       root.fetchError = "No data from Yahoo Finance"
@@ -416,7 +416,7 @@ Panel {
     root.chartLoading = false
     var raw = String(text || "")
     if (raw.replace(/\s+/g, "") === "") return
-    var parsed = Model.parseSeriesLines(raw, [root.chartRequestedSymbol])
+    var parsed = Model.parseSeriesLines(raw, [root.chartRequestedSymbol], root.chartRequestedRange)
     root.chartSeries = parsed.series
     root.chartSeriesEnd = parsed.ends[root.chartRequestedSymbol] || 0
     root.chartSeriesRange = root.chartRequestedRange

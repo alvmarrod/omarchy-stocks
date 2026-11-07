@@ -590,6 +590,37 @@ test("parseChartResponse: sessionEnd is the close of the session holding the las
   assert.equal(Model.parseChartResponse(SERIES_LINE).sessionEnd, null)
 })
 
+test("parseChartResponse: rejects implausible timestamp spans and ordering", () => {
+  const line = (timestamps, closes) =>
+    JSON.stringify({
+      chart: {
+        result: [
+          {
+            meta: { symbol: "X", regularMarketPrice: 1 },
+            timestamp: timestamps,
+            indicators: { quote: [{ close: closes }] }
+          }
+        ],
+        error: null
+      }
+    })
+  assert.deepEqual(Model.parseChartResponse(line([0, 1000000000000], [1, 2]), "1d").series, [])
+  const threeDays = [0, 3 * 86400]
+  assert.deepEqual(Model.parseChartResponse(line(threeDays, [1, 2]), "1d").series, [])
+  assert.equal(Model.parseChartResponse(line(threeDays, [1, 2]), "5d").series.length, 2)
+  assert.deepEqual(Model.parseChartResponse(line([200, 100], [1, 2]), "1d").series, [])
+})
+
+test("chartTimeTicks: a huge claimed span is bounded by the received samples", () => {
+  const huge = [
+    { t: 0, c: 1 },
+    { t: 1000000000000, c: 2 }
+  ]
+  const ticks = Model.chartTimeTicks(huge, "1d", 0, 0)
+  assert.ok(ticks.length <= Model.MAX_TIME_TICKS)
+  assert.ok(ticks.length <= 1)
+})
+
 test("seriesEndTime: only when the last bar belongs to the reported session", () => {
   const s = [
     { t: 100, c: 1 },
@@ -598,6 +629,7 @@ test("seriesEndTime: only when the last bar belongs to the reported session", ()
   assert.equal(Model.seriesEndTime(s, { start: 100, end: 1000 }), 1000)
   assert.equal(Model.seriesEndTime(s, { start: 100, end: 500 }), 500)
   assert.equal(Model.seriesEndTime(s, { start: 600, end: 1000 }), null) // next session
+  assert.equal(Model.seriesEndTime(s, { start: 100, end: 1000000000000 }, "1d"), null)
   assert.equal(Model.seriesEndTime(s, { start: 100 }), null)
   assert.equal(Model.seriesEndTime([], { start: 100, end: 1000 }), null)
   assert.equal(Model.seriesEndTime(s, null), null)
@@ -656,10 +688,7 @@ test("seriesSlots / intervalSeconds: one slot per bar plus an open session's rem
 
 test("chartTimeTicks: hourly on 1d, per session on 5d, spread on longer ranges", () => {
   const day = 86400
-  const oneDay = [
-    { t: 0, c: 1 },
-    { t: 6 * 3600, c: 2 }
-  ]
+  const oneDay = Array.from({ length: 7 }, (_, index) => ({ t: index * 3600, c: index + 1 }))
   const hourly = Model.chartTimeTicks(oneDay, "1d", 0, 0)
   assert.deepEqual(
     hourly.map(tick => tick.t),

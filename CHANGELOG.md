@@ -2,6 +2,12 @@
 
 All notable changes to this plugin are documented here.
 
+## [1.2.2] - 2026-11-07
+
+### Fixed
+
+- Validate chart timestamps against the requested range and derive 1D grid ticks from the received samples, so a tiny malicious response cannot amplify into millions of axis ticks.
+
 ## [1.2.1] - 2026-11-07
 
 ### Fixed
