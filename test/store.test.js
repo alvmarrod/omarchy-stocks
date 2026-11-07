@@ -80,6 +80,28 @@ test("addSymbol: adds once, selects it, and never mutates the old state", () => 
   assert.equal(again.selectedSymbol, "AAPL")
 })
 
+test("addSymbol: stops at MAX_SYMBOLS; duplicates still select", () => {
+  const Model = require("../Model.js")
+  assert.equal(Store.MAX_SYMBOLS, 30)
+  assert.equal(Store.MAX_SYMBOLS, Model.MAX_FETCH_SYMBOLS)
+  let state = seeded()
+  for (let index = 0; index < Store.MAX_SYMBOLS; index++) state = Store.addSymbol(state, "S" + index)
+  assert.equal(Store.activeSymbols(state).length, Store.MAX_SYMBOLS)
+  const rejected = Store.addSymbol(state, "EXTRA")
+  assert.equal(rejected, state)
+  assert.equal(Store.activeSymbols(rejected).length, Store.MAX_SYMBOLS)
+  const duplicate = Store.addSymbol(state, "S0")
+  assert.equal(duplicate.selectedSymbol, "S0")
+  assert.equal(Store.activeSymbols(duplicate).length, Store.MAX_SYMBOLS)
+})
+
+test("addSymbol: the limit is per watchlist", () => {
+  let state = seeded()
+  for (let index = 0; index < Store.MAX_SYMBOLS; index++) state = Store.addSymbol(state, "S" + index)
+  state = Store.addWatchlist(state, "Second")
+  assert.deepEqual(Store.activeSymbols(Store.addSymbol(state, "EXTRA")), ["EXTRA"])
+})
+
 test("removeSymbol: picks the next symbol, or none when the list empties", () => {
   let state = Store.addSymbol(Store.addSymbol(seeded(), "AAPL"), "NVDA")
   state = Store.selectSymbol(state, "AAPL")

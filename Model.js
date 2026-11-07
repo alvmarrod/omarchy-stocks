@@ -95,10 +95,52 @@ function scrollSpeed(value, fallback) {
 // JSON document per line in request order. Deliberately no `-f`: a 404 for an
 // unknown symbol then still yields Yahoo's error JSON on its own line instead
 // of an empty line, which keeps the other symbols' lines aligned.
+//
+// Every response is capped: a compromised origin could otherwise stream
+// hundreds of megabytes into the shell's StdioCollector within the timeout.
+var MAX_RESPONSE_BYTES = 1024 * 1024
+// Worst measured 1d payload is ~25.6 KB (288-bar FX pairs); 30 symbols keep
+// the request under 75% of the cap.
+var MAX_FETCH_SYMBOLS = 30
+
+function curlArgs(userAgent) {
+  return [
+    "-sS",
+    "--max-time",
+    "10",
+    "--max-filesize",
+    String(MAX_RESPONSE_BYTES),
+    "-A",
+    String(userAgent || "omarchy-stocks"),
+    "-w",
+    "\n"
+  ]
+}
+
+// `head` closes the pipe at the byte cap, so curl cannot keep feeding the
+// collector. pipefail keeps curl failures visible instead of head's success.
+function cappedCurl(args) {
+  return ["bash", "-c", 'set -o pipefail; curl "$@" | head -c ' + MAX_RESPONSE_BYTES, "curl"].concat(args)
+}
+
 function curlCommand(symbols, userAgent, range) {
-  var cmd = ["curl", "-sS", "--max-time", "10", "-A", String(userAgent || "omarchy-stocks"), "-w", "\n"]
-  for (var i = 0; i < symbols.length; i++) cmd.push(chartUrl(symbols[i], range))
-  return cmd
+  var args = curlArgs(userAgent)
+  for (var i = 0; i < symbols.length; i++) args.push(chartUrl(symbols[i], range))
+  return cappedCurl(args)
+}
+
+// Selected symbol first, then the rest, capped so a fetch always fits the
+// response budget and the bar never loses its quote to truncation.
+function fetchSymbols(symbols, selected, limit) {
+  var list = symbols || []
+  var max = limit || MAX_FETCH_SYMBOLS
+  var out = []
+  var value = trimString(selected).toUpperCase()
+  if (value && list.indexOf(value) !== -1) out.push(value)
+  for (var i = 0; i < list.length && out.length < max; i++) {
+    if (out.indexOf(list[i]) === -1) out.push(list[i])
+  }
+  return out
 }
 
 function longTermChartUrl(symbol) {
@@ -106,9 +148,9 @@ function longTermChartUrl(symbol) {
 }
 
 function longTermIndicatorCommand(symbols, userAgent) {
-  var cmd = ["curl", "-sS", "--max-time", "10", "-A", String(userAgent || "omarchy-stocks"), "-w", "\n"]
-  for (var i = 0; i < symbols.length; i++) cmd.push(longTermChartUrl(symbols[i]))
-  return cmd
+  var args = curlArgs(userAgent)
+  for (var i = 0; i < symbols.length; i++) args.push(longTermChartUrl(symbols[i]))
+  return cappedCurl(args)
 }
 
 function tradingViewSymbol(symbol) {
@@ -962,6 +1004,9 @@ if (typeof module !== "undefined") {
     cycleSeconds: cycleSeconds,
     chartUrl: chartUrl,
     curlCommand: curlCommand,
+    fetchSymbols: fetchSymbols,
+    MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES,
+    MAX_FETCH_SYMBOLS: MAX_FETCH_SYMBOLS,
     longTermChartUrl: longTermChartUrl,
     longTermIndicatorCommand: longTermIndicatorCommand,
     tradingViewSymbol: tradingViewSymbol,
