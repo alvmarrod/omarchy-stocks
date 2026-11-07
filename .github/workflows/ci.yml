@@ -170,6 +170,9 @@ jobs:
           done
           if [ "$failed" -ne 0 ]; then
             echo "Fix the failed checks above and push again." >> "$summary"
+          fi
+          cat "$summary"
+          if [ "$failed" -ne 0 ]; then
             exit 1
           fi
 
