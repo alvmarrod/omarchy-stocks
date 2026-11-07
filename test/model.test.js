@@ -43,26 +43,68 @@ test("cycleSeconds: 0 is allowed (pinned), negatives and junk fall back", () => 
 })
 
 // Trimmed real responses from query1.finance.yahoo.com/v8/finance/chart/<SYM>?range=1d&interval=1d
-const AAPL_LINE = JSON.stringify({ chart: { result: [{ meta: {
-  currency: "USD", symbol: "AAPL", exchangeName: "NMS", fullExchangeName: "NasdaqGS",
-  regularMarketTime: 1786996801, regularMarketPrice: 305.59, fiftyTwoWeekHigh: 344.57,
-  fiftyTwoWeekLow: 223.78, regularMarketDayHigh: 307.66, regularMarketDayLow: 302.939,
-  regularMarketVolume: 32743947, longName: "Apple Inc.", shortName: "Apple Inc.",
-  chartPreviousClose: 305.93, priceHint: 2
-}, timestamp: [1786996800], indicators: { quote: [{ close: [305.59] }] } }], error: null } })
+const AAPL_LINE = JSON.stringify({
+  chart: {
+    result: [
+      {
+        meta: {
+          currency: "USD",
+          symbol: "AAPL",
+          exchangeName: "NMS",
+          fullExchangeName: "NasdaqGS",
+          regularMarketTime: 1786996801,
+          regularMarketPrice: 305.59,
+          fiftyTwoWeekHigh: 344.57,
+          fiftyTwoWeekLow: 223.78,
+          regularMarketDayHigh: 307.66,
+          regularMarketDayLow: 302.939,
+          regularMarketVolume: 32743947,
+          longName: "Apple Inc.",
+          shortName: "Apple Inc.",
+          chartPreviousClose: 305.93,
+          priceHint: 2
+        },
+        timestamp: [1786996800],
+        indicators: { quote: [{ close: [305.59] }] }
+      }
+    ],
+    error: null
+  }
+})
 
-const GOOGL_LINE = JSON.stringify({ chart: { result: [{ meta: {
-  currency: "USD", symbol: "GOOGL", fullExchangeName: "NasdaqGS", regularMarketPrice: 344.0,
-  chartPreviousClose: 345.9, shortName: "Alphabet Inc.", regularMarketTime: 1786996801
-} }], error: null } })
+const GOOGL_LINE = JSON.stringify({
+  chart: {
+    result: [
+      {
+        meta: {
+          currency: "USD",
+          symbol: "GOOGL",
+          fullExchangeName: "NasdaqGS",
+          regularMarketPrice: 344.0,
+          chartPreviousClose: 345.9,
+          shortName: "Alphabet Inc.",
+          regularMarketTime: 1786996801
+        }
+      }
+    ],
+    error: null
+  }
+})
 
-const NOT_FOUND_LINE = JSON.stringify({ chart: { result: null,
-  error: { code: "Not Found", description: "No data found, symbol may be delisted" } } })
+const NOT_FOUND_LINE = JSON.stringify({
+  chart: { result: null, error: { code: "Not Found", description: "No data found, symbol may be delisted" } }
+})
 
 test("chartUrl: encodes the symbol into the v8 chart endpoint", () => {
   assert.equal(Model.chartUrl("AAPL"), "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=5m")
-  assert.equal(Model.chartUrl("^GSPC"), "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=1d&interval=5m")
-  assert.equal(Model.chartUrl("AAPL", "1mo"), "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=1mo&interval=1d")
+  assert.equal(
+    Model.chartUrl("^GSPC"),
+    "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=1d&interval=5m"
+  )
+  assert.equal(
+    Model.chartUrl("AAPL", "1mo"),
+    "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=1mo&interval=1d"
+  )
 })
 
 test("curlCommand: one curl, one URL per symbol, newline write-out, custom UA", () => {
@@ -73,9 +115,13 @@ test("curlCommand: one curl, one URL per symbol, newline write-out, custom UA", 
 })
 
 test("longTermIndicatorCommand: requests five years of weekly closes", () => {
-  assert.equal(Model.longTermChartUrl("^GSPC"), "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=5y&interval=1wk")
+  assert.equal(
+    Model.longTermChartUrl("^GSPC"),
+    "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=5y&interval=1wk"
+  )
   assert.deepEqual(Model.longTermIndicatorCommand(["AAPL", "NVDA"], "ua").slice(8), [
-    Model.longTermChartUrl("AAPL"), Model.longTermChartUrl("NVDA")
+    Model.longTermChartUrl("AAPL"),
+    Model.longTermChartUrl("NVDA")
   ])
 })
 
@@ -97,7 +143,7 @@ test("parseChartResponse: successful line", () => {
   assert.equal(q.price, 305.59)
   assert.equal(q.prevClose, 305.93)
   assert.ok(Math.abs(q.change - -0.34) < 1e-9)
-  assert.ok(Math.abs(q.changePct - (-0.34 / 305.93 * 100)) < 1e-9)
+  assert.ok(Math.abs(q.changePct - (-0.34 / 305.93) * 100) < 1e-9)
   assert.equal(q.dayLow, 302.939)
   assert.equal(q.dayHigh, 307.66)
   assert.equal(q.week52Low, 223.78)
@@ -106,7 +152,9 @@ test("parseChartResponse: successful line", () => {
 })
 
 test("parseChartResponse: missing optional fields become null, name falls back to symbol", () => {
-  const q = Model.parseChartResponse(JSON.stringify({ chart: { result: [{ meta: { symbol: "X", regularMarketPrice: 2 } }] } }))
+  const q = Model.parseChartResponse(
+    JSON.stringify({ chart: { result: [{ meta: { symbol: "X", regularMarketPrice: 2 } }] } })
+  )
   assert.equal(q.error, "")
   assert.equal(q.name, "X")
   assert.equal(q.prevClose, null)
@@ -119,18 +167,28 @@ test("parseChartResponse: error, empty and garbage lines", () => {
   assert.equal(Model.parseChartResponse(NOT_FOUND_LINE).error, "Not Found")
   assert.equal(Model.parseChartResponse("").error, "No data")
   assert.equal(Model.parseChartResponse("<html>429</html>").error, "Bad response")
-  assert.equal(Model.parseChartResponse(JSON.stringify({ chart: { result: [{ meta: { symbol: "Y" } }] } })).error, "No data")
+  assert.equal(
+    Model.parseChartResponse(JSON.stringify({ chart: { result: [{ meta: { symbol: "Y" } }] } })).error,
+    "No data"
+  )
 })
 
 test("parseQuoteLines: one Quote per requested symbol, in request order, matched by symbol", () => {
   const quotes = Model.parseQuoteLines(GOOGL_LINE + "\n" + AAPL_LINE + "\n", ["AAPL", "GOOGL"])
-  assert.deepEqual(quotes.map(q => q.symbol), ["AAPL", "GOOGL"])
+  assert.deepEqual(
+    quotes.map(q => q.symbol),
+    ["AAPL", "GOOGL"]
+  )
   assert.equal(quotes[0].price, 305.59)
   assert.equal(quotes[1].price, 344.0)
 })
 
 test("parseQuoteLines: error lines are attributed positionally when the line count matches", () => {
-  const quotes = Model.parseQuoteLines([AAPL_LINE, NOT_FOUND_LINE, GOOGL_LINE].join("\n") + "\n", ["AAPL", "NOPE", "GOOGL"])
+  const quotes = Model.parseQuoteLines([AAPL_LINE, NOT_FOUND_LINE, GOOGL_LINE].join("\n") + "\n", [
+    "AAPL",
+    "NOPE",
+    "GOOGL"
+  ])
   assert.equal(quotes[1].symbol, "NOPE")
   assert.equal(quotes[1].error, "Not Found")
   assert.equal(quotes[2].symbol, "GOOGL")
@@ -156,7 +214,7 @@ function quote(symbol, price, prev, error) {
   q.price = price === undefined ? null : price
   q.prevClose = prev === undefined ? null : prev
   q.change = q.price !== null && q.prevClose !== null ? q.price - q.prevClose : null
-  q.changePct = q.change !== null && q.prevClose ? q.change / q.prevClose * 100 : null
+  q.changePct = q.change !== null && q.prevClose ? (q.change / q.prevClose) * 100 : null
   return q
 }
 
@@ -173,14 +231,19 @@ test("isValid / isDown / validCount", () => {
 })
 
 test("firstValidIndex / nextIndex skip invalid quotes and wrap", () => {
-  const list = [quote("A", null, null, "Not Found"), quote("B", 1, 1), quote("C", 2, 1), quote("D", null, null, "No data")]
+  const list = [
+    quote("A", null, null, "Not Found"),
+    quote("B", 1, 1),
+    quote("C", 2, 1),
+    quote("D", null, null, "No data")
+  ]
   assert.equal(Model.firstValidIndex(list), 1)
   assert.equal(Model.firstValidIndex([quote("X", null, null, "Not Found")]), -1)
   assert.equal(Model.firstValidIndex([]), -1)
   assert.equal(Model.nextIndex(1, list, 1), 2)
-  assert.equal(Model.nextIndex(2, list, 1), 1)      // wraps past D and A
-  assert.equal(Model.nextIndex(1, list, -1), 2)     // backwards wraps past A and D
-  assert.equal(Model.nextIndex(-1, list, 1), 1)     // no current -> first valid
+  assert.equal(Model.nextIndex(2, list, 1), 1) // wraps past D and A
+  assert.equal(Model.nextIndex(1, list, -1), 2) // backwards wraps past A and D
+  assert.equal(Model.nextIndex(-1, list, 1), 1) // no current -> first valid
   assert.equal(Model.nextIndex(0, [quote("B", 1, 1)], 1), 0)
   assert.equal(Model.nextIndex(0, [quote("X", null, null, "Not Found")], 1), -1)
   assert.equal(Model.nextIndex(0, [], 1), -1)
@@ -211,9 +274,22 @@ test("S&P screen: dynamic rows preserve every supplied passing stock", () => {
 })
 
 test("screenRows: uses MACD and RSI returned by the daily scanner", () => {
-  const stocks = [{ symbol: "AAA", price: 130, ema200: 100, ema20d: 99, ema5y: 50,
-    target: 170, marketCap: 4.28e12, buy: 4, hold: 1, sell: 0,
-    macd: { value: 2, signal: 1, action: "Buy" }, rsi: { value: 75, action: "Sell" } }]
+  const stocks = [
+    {
+      symbol: "AAA",
+      price: 130,
+      ema200: 100,
+      ema20d: 99,
+      ema5y: 50,
+      target: 170,
+      marketCap: 4.28e12,
+      buy: 4,
+      hold: 1,
+      sell: 0,
+      macd: { value: 2, signal: 1, action: "Buy" },
+      rsi: { value: 75, action: "Sell" }
+    }
+  ]
   const row = Model.screenRows(stocks, [])[0]
   assert.equal(row.macd.action, "Buy")
   assert.equal(row.rsi.action, "Sell")
@@ -221,8 +297,9 @@ test("screenRows: uses MACD and RSI returned by the daily scanner", () => {
 })
 
 test("screenRows: live price updates price-sensitive checks and matches by symbol", () => {
-  const stocks = [{ symbol: "AAA", name: "A", price: 120, ema200: 100, ema20d: 99, ema5y: 50,
-    target: 150, buy: 4, hold: 1, sell: 0 }]
+  const stocks = [
+    { symbol: "AAA", name: "A", price: 120, ema200: 100, ema20d: 99, ema5y: 50, target: 150, buy: 4, hold: 1, sell: 0 }
+  ]
   const live = quote("aaa", 130, 129)
   const row = Model.screenRows(stocks, [live])[0]
   assert.equal(row.price, 130)
@@ -236,19 +313,61 @@ test("screenRows: live price updates price-sensitive checks and matches by symbo
 
 test("sortScreenRows: sorts a copy by screen columns and keeps missing values last", () => {
   const rows = [
-    { symbol: "BBB", price: 20, ema200: 10, aboveEmaPct: 100, analystCount: 3, targetUpsidePct: 5,
-      macd: { action: "Sell" }, rsi: { action: "Neutral" } },
-    { symbol: "AAA", price: 30, ema200: 20, aboveEmaPct: 50, analystCount: 8, targetUpsidePct: 25,
-      macd: { action: "Buy" }, rsi: { action: "Sell" } },
-    { symbol: "CCC", price: null, ema200: 15, aboveEmaPct: null, analystCount: 1, targetUpsidePct: null,
-      macd: { action: "Neutral" }, rsi: { action: "Buy" } }
+    {
+      symbol: "BBB",
+      price: 20,
+      ema200: 10,
+      aboveEmaPct: 100,
+      analystCount: 3,
+      targetUpsidePct: 5,
+      macd: { action: "Sell" },
+      rsi: { action: "Neutral" }
+    },
+    {
+      symbol: "AAA",
+      price: 30,
+      ema200: 20,
+      aboveEmaPct: 50,
+      analystCount: 8,
+      targetUpsidePct: 25,
+      macd: { action: "Buy" },
+      rsi: { action: "Sell" }
+    },
+    {
+      symbol: "CCC",
+      price: null,
+      ema200: 15,
+      aboveEmaPct: null,
+      analystCount: 1,
+      targetUpsidePct: null,
+      macd: { action: "Neutral" },
+      rsi: { action: "Buy" }
+    }
   ]
-  assert.deepEqual(Model.sortScreenRows(rows, "symbol", 1).map(row => row.symbol), ["AAA", "BBB", "CCC"])
-  assert.deepEqual(Model.sortScreenRows(rows, "price", -1).map(row => row.symbol), ["AAA", "BBB", "CCC"])
-  assert.deepEqual(Model.sortScreenRows(rows, "ema200", -1).map(row => row.symbol), ["BBB", "AAA", "CCC"])
-  assert.deepEqual(Model.sortScreenRows(rows, "macd", 1).map(row => row.symbol), ["BBB", "CCC", "AAA"])
-  assert.deepEqual(Model.sortScreenRows(rows, "rsi", -1).map(row => row.symbol), ["CCC", "BBB", "AAA"])
-  assert.deepEqual(rows.map(row => row.symbol), ["BBB", "AAA", "CCC"])
+  assert.deepEqual(
+    Model.sortScreenRows(rows, "symbol", 1).map(row => row.symbol),
+    ["AAA", "BBB", "CCC"]
+  )
+  assert.deepEqual(
+    Model.sortScreenRows(rows, "price", -1).map(row => row.symbol),
+    ["AAA", "BBB", "CCC"]
+  )
+  assert.deepEqual(
+    Model.sortScreenRows(rows, "ema200", -1).map(row => row.symbol),
+    ["BBB", "AAA", "CCC"]
+  )
+  assert.deepEqual(
+    Model.sortScreenRows(rows, "macd", 1).map(row => row.symbol),
+    ["BBB", "CCC", "AAA"]
+  )
+  assert.deepEqual(
+    Model.sortScreenRows(rows, "rsi", -1).map(row => row.symbol),
+    ["CCC", "BBB", "AAA"]
+  )
+  assert.deepEqual(
+    rows.map(row => row.symbol),
+    ["BBB", "AAA", "CCC"]
+  )
 })
 
 function weeklySeries(values) {
@@ -265,8 +384,11 @@ test("long-term MACD and RSI: weekly Buy, Sell, and Neutral signals", () => {
   assert.equal(Model.rsiIndicator(rising).action, "Sell")
   assert.equal(Model.rsiIndicator(falling).action, "Buy")
   assert.deepEqual(Model.rsiIndicator(flat), { value: 50, action: "Neutral" })
-  assert.deepEqual(Model.macdIndicator(weeklySeries(Array(34).fill(100))),
-    { value: null, signal: null, action: "Neutral" })
+  assert.deepEqual(Model.macdIndicator(weeklySeries(Array(34).fill(100))), {
+    value: null,
+    signal: null,
+    action: "Neutral"
+  })
 })
 
 test("long-term indicators map five-year weekly series by screen symbol", () => {
@@ -298,7 +420,7 @@ test("formatPrice: 2 decimals, 4 below 1, thousands separators", () => {
 
 test("formatChange: arrow, signed absolute change, percent", () => {
   assert.equal(Model.formatChange(quote("A", 306.87, 305.59)), "▲ +1.28 (0.42%)")
-  assert.equal(Model.formatChange(quote("B", 410.05, 412.10)), "▼ -2.05 (0.50%)")
+  assert.equal(Model.formatChange(quote("B", 410.05, 412.1)), "▼ -2.05 (0.50%)")
   assert.equal(Model.formatChange(quote("C", 10, 10)), "• +0.00 (0.00%)")
   assert.equal(Model.formatChange(quote("D", 0.5, 0.4)), "▲ +0.1000 (25.00%)")
   assert.equal(Model.formatChange(quote("E", 5, null)), "")
@@ -308,7 +430,7 @@ test("formatChange: arrow, signed absolute change, percent", () => {
 test("barLabel: full, compact, error, no-change", () => {
   assert.equal(Model.barLabel(quote("AAPL", 306.87, 305.59), false), "AAPL 306.87 ▲0.42%")
   assert.equal(Model.barLabel(quote("AAPL", 306.87, 305.59), true), "AAPL ▲0.42%")
-  assert.equal(Model.barLabel(quote("MSFT", 410.05, 412.10), false), "MSFT 410.05 ▼0.50%")
+  assert.equal(Model.barLabel(quote("MSFT", 410.05, 412.1), false), "MSFT 410.05 ▼0.50%")
   assert.equal(Model.barLabel(quote("X", 5, null), false), "X 5.00")
   assert.equal(Model.barLabel(quote("NOPE", null, null, "Not Found"), false), "NOPE !")
   assert.equal(Model.barLabel(null, false), "")
@@ -359,20 +481,48 @@ test("tickerWidth / scrollSpeed clamps", () => {
   assert.equal(Model.scrollSpeed(null, 25), 25)
 })
 
-const SERIES_LINE = JSON.stringify({ chart: { result: [{ meta: {
-  currency: "USD", symbol: "AAPL", regularMarketPrice: 305.59, previousClose: 305.93,
-  chartPreviousClose: 333.74, regularMarketVolume: 32743947, shortName: "Apple Inc.", regularMarketTime: 1786996801
-}, timestamp: [100, 200, 300, 400], indicators: { quote: [{
-  close: [305.76, null, 305.69, 305.59], open: [null, 305.8, 305.7, 305.6]
-}] } }], error: null } })
+const SERIES_LINE = JSON.stringify({
+  chart: {
+    result: [
+      {
+        meta: {
+          currency: "USD",
+          symbol: "AAPL",
+          regularMarketPrice: 305.59,
+          previousClose: 305.93,
+          chartPreviousClose: 333.74,
+          regularMarketVolume: 32743947,
+          shortName: "Apple Inc.",
+          regularMarketTime: 1786996801
+        },
+        timestamp: [100, 200, 300, 400],
+        indicators: {
+          quote: [
+            {
+              close: [305.76, null, 305.69, 305.59],
+              open: [null, 305.8, 305.7, 305.6]
+            }
+          ]
+        }
+      }
+    ],
+    error: null
+  }
+})
 
 test("parseChartResponse: series skips nulls, reads open/volume, prefers previousClose", () => {
   const q = Model.parseChartResponse(SERIES_LINE)
-  assert.deepEqual(q.series, [{ t: 100, c: 305.76 }, { t: 300, c: 305.69 }, { t: 400, c: 305.59 }])
+  assert.deepEqual(q.series, [
+    { t: 100, c: 305.76 },
+    { t: 300, c: 305.69 },
+    { t: 400, c: 305.59 }
+  ])
   assert.equal(q.open, 305.8)
   assert.equal(q.volume, 32743947)
   assert.equal(q.prevClose, 305.93)
-  const bare = Model.parseChartResponse(JSON.stringify({ chart: { result: [{ meta: { symbol: "X", regularMarketPrice: 2 } }] } }))
+  const bare = Model.parseChartResponse(
+    JSON.stringify({ chart: { result: [{ meta: { symbol: "X", regularMarketPrice: 2 } }] } })
+  )
   assert.deepEqual(bare.series, [])
   assert.equal(bare.open, null)
   assert.equal(bare.volume, null)
@@ -387,10 +537,23 @@ test("parseSeriesLines: symbol -> series map and session ends, missing symbols g
   assert.equal(parsed.ends.NOPE, null)
 })
 
-const SESSION_LINE = JSON.stringify({ chart: { result: [{ meta: {
-  symbol: "AAPL", regularMarketPrice: 305.59, regularMarketTime: 500,
-  currentTradingPeriod: { regular: { start: 100, end: 1000 } }
-}, timestamp: [100, 500], indicators: { quote: [{ close: [305.76, 305.69] }] } }], error: null } })
+const SESSION_LINE = JSON.stringify({
+  chart: {
+    result: [
+      {
+        meta: {
+          symbol: "AAPL",
+          regularMarketPrice: 305.59,
+          regularMarketTime: 500,
+          currentTradingPeriod: { regular: { start: 100, end: 1000 } }
+        },
+        timestamp: [100, 500],
+        indicators: { quote: [{ close: [305.76, 305.69] }] }
+      }
+    ],
+    error: null
+  }
+})
 
 test("parseChartResponse: sessionEnd is the close of the session holding the last bar", () => {
   assert.equal(Model.parseChartResponse(SESSION_LINE).sessionEnd, 1000)
@@ -398,24 +561,34 @@ test("parseChartResponse: sessionEnd is the close of the session holding the las
 })
 
 test("seriesEndTime: only when the last bar belongs to the reported session", () => {
-  const s = [{ t: 100, c: 1 }, { t: 500, c: 2 }]
+  const s = [
+    { t: 100, c: 1 },
+    { t: 500, c: 2 }
+  ]
   assert.equal(Model.seriesEndTime(s, { start: 100, end: 1000 }), 1000)
   assert.equal(Model.seriesEndTime(s, { start: 100, end: 500 }), 500)
-  assert.equal(Model.seriesEndTime(s, { start: 600, end: 1000 }), null)  // next session
+  assert.equal(Model.seriesEndTime(s, { start: 600, end: 1000 }), null) // next session
   assert.equal(Model.seriesEndTime(s, { start: 100 }), null)
   assert.equal(Model.seriesEndTime([], { start: 100, end: 1000 }), null)
   assert.equal(Model.seriesEndTime(s, null), null)
 })
 
 test("seriesBounds", () => {
-  const s = [{ t: 0, c: 10 }, { t: 5, c: 14 }, { t: 10, c: 12 }]
+  const s = [
+    { t: 0, c: 10 },
+    { t: 5, c: 14 },
+    { t: 10, c: 12 }
+  ]
   assert.deepEqual(Model.seriesBounds(s), { min: 10, max: 14 })
   assert.equal(Model.seriesBounds([]), null)
   assert.equal(Model.seriesBounds(null), null)
 })
 
 test("seriesBounds: an optional reference value widens the range so a line stays visible", () => {
-  const s = [{ t: 0, c: 10 }, { t: 10, c: 20 }]
+  const s = [
+    { t: 0, c: 10 },
+    { t: 10, c: 20 }
+  ]
   assert.deepEqual(Model.seriesBounds(s, 5), { min: 5, max: 20 })
   assert.deepEqual(Model.seriesBounds(s, 25), { min: 10, max: 25 })
   assert.deepEqual(Model.seriesBounds(s, 15), { min: 10, max: 20 })
@@ -423,14 +596,23 @@ test("seriesBounds: an optional reference value widens the range so a line stays
 })
 
 test("seriesPoints: boundsValue keeps a reference outside the data on the canvas", () => {
-  const s = [{ t: 0, c: 10 }, { t: 10, c: 20 }]
-  assert.deepEqual(Model.seriesPoints(s, 100, 40, 2, 0, 5).map(p => p.y), [26, 2])
+  const s = [
+    { t: 0, c: 10 },
+    { t: 10, c: 20 }
+  ]
+  assert.deepEqual(
+    Model.seriesPoints(s, 100, 40, 2, 0, 5).map(p => p.y),
+    [26, 2]
+  )
   assert.equal(Model.valueToY(5, Model.seriesBounds(s, 5), 40, 2), 38)
   assert.deepEqual(Model.seriesPoints(s, 100, 40, 2, 0, 15), Model.seriesPoints(s, 100, 40, 2))
 })
 
 test("seriesSlots / intervalSeconds: one slot per bar plus an open session's remainder", () => {
-  const s = [{ t: 0, c: 1 }, { t: 5, c: 2 }]
+  const s = [
+    { t: 0, c: 1 },
+    { t: 5, c: 2 }
+  ]
   assert.equal(Model.seriesSlots(s, 0, 5), 1)
   assert.equal(Model.seriesSlots(s, 15, 5), 3)
   assert.equal(Model.seriesSlots(s, 15, 0), 1)
@@ -444,41 +626,101 @@ test("seriesSlots / intervalSeconds: one slot per bar plus an open session's rem
 
 test("chartTimeTicks: hourly on 1d, per session on 5d, spread on longer ranges", () => {
   const day = 86400
-  const oneDay = [{ t: 0, c: 1 }, { t: 6 * 3600, c: 2 }]
+  const oneDay = [
+    { t: 0, c: 1 },
+    { t: 6 * 3600, c: 2 }
+  ]
   const hourly = Model.chartTimeTicks(oneDay, "1d", 0, 0)
-  assert.deepEqual(hourly.map(tick => tick.t), [3600, 7200, 10800, 14400, 18000])
-  assert.deepEqual(hourly.map(tick => tick.fraction), [1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6])
+  assert.deepEqual(
+    hourly.map(tick => tick.t),
+    [3600, 7200, 10800, 14400, 18000]
+  )
+  assert.deepEqual(
+    hourly.map(tick => tick.fraction),
+    [1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6]
+  )
   const fiveDays = [0, day, 2 * day, 3 * day, 4 * day].map(t => ({ t, c: 1 }))
   const sessions = Model.chartTimeTicks(fiveDays, "5d", 0, 0)
-  assert.deepEqual(sessions.map(tick => tick.t), [day, 2 * day, 3 * day, 4 * day])
-  assert.deepEqual(sessions.map(tick => tick.fraction), [0.25, 0.5, 0.75, 1])
-  const month = [{ t: 0, c: 1 }, { t: 1000, c: 2 }]
+  assert.deepEqual(
+    sessions.map(tick => tick.t),
+    [day, 2 * day, 3 * day, 4 * day]
+  )
+  assert.deepEqual(
+    sessions.map(tick => tick.fraction),
+    [0.25, 0.5, 0.75, 1]
+  )
+  const month = [
+    { t: 0, c: 1 },
+    { t: 1000, c: 2 }
+  ]
   const weekly = Model.chartTimeTicks(month, "1mo", 0)
-  assert.deepEqual(weekly.map(tick => tick.t), [250, 500, 750])
-  assert.deepEqual(weekly.map(tick => tick.fraction), [0.25, 0.5, 0.75])
+  assert.deepEqual(
+    weekly.map(tick => tick.t),
+    [250, 500, 750]
+  )
+  assert.deepEqual(
+    weekly.map(tick => tick.fraction),
+    [0.25, 0.5, 0.75]
+  )
   assert.equal(Model.chartTimeTicks(month, "6mo", 0).length, 5)
   assert.equal(Model.chartTimeTicks(month, "1y", 0).length, 3)
   assert.deepEqual(Model.chartTimeTicks([], "1d", 0), [])
 })
 
 test("seriesPoints: one x-slot per bar, value-scaled y within padding", () => {
-  const s = [{ t: 0, c: 10 }, { t: 5, c: 14 }, { t: 10, c: 12 }]
+  const s = [
+    { t: 0, c: 10 },
+    { t: 5, c: 14 },
+    { t: 10, c: 12 }
+  ]
   const pts = Model.seriesPoints(s, 100, 40, 2)
   assert.equal(pts.length, 3)
-  assert.deepEqual(pts[0], { x: 2, y: 38 })     // min value -> bottom
-  assert.deepEqual(pts[1], { x: 50, y: 2 })     // max value -> top
-  assert.deepEqual(pts[2], { x: 98, y: 20 })    // midway value -> middle
+  assert.deepEqual(pts[0], { x: 2, y: 38 }) // min value -> bottom
+  assert.deepEqual(pts[1], { x: 50, y: 2 }) // max value -> top
+  assert.deepEqual(pts[2], { x: 98, y: 20 }) // midway value -> middle
   // Uneven bar timestamps (overnight/weekend gaps) keep equal spacing.
-  assert.deepEqual(Model.seriesPoints([{ t: 0, c: 10 }, { t: 1, c: 14 }, { t: 1000, c: 12 }], 100, 40, 2)
-    .map(p => p.x), [2, 50, 98])
+  assert.deepEqual(
+    Model.seriesPoints(
+      [
+        { t: 0, c: 10 },
+        { t: 1, c: 14 },
+        { t: 1000, c: 12 }
+      ],
+      100,
+      40,
+      2
+    ).map(p => p.x),
+    [2, 50, 98]
+  )
   assert.deepEqual(Model.seriesPoints([{ t: 3, c: 7 }], 100, 40, 2), [{ x: 2, y: 20 }])
-  assert.deepEqual(Model.seriesPoints([{ t: 3, c: 7 }, { t: 9, c: 7 }], 100, 40, 2), [{ x: 2, y: 20 }, { x: 98, y: 20 }])
+  assert.deepEqual(
+    Model.seriesPoints(
+      [
+        { t: 3, c: 7 },
+        { t: 9, c: 7 }
+      ],
+      100,
+      40,
+      2
+    ),
+    [
+      { x: 2, y: 20 },
+      { x: 98, y: 20 }
+    ]
+  )
   assert.deepEqual(Model.seriesPoints([], 100, 40, 2), [])
 })
 
 test("seriesPoints: endTime and interval leave the rest of an open session empty", () => {
-  const s = [{ t: 0, c: 10 }, { t: 5, c: 14 }, { t: 10, c: 12 }]
-  assert.deepEqual(Model.seriesPoints(s, 100, 40, 2, 20, null, 5).map(p => p.x), [2, 26, 50])
+  const s = [
+    { t: 0, c: 10 },
+    { t: 5, c: 14 },
+    { t: 10, c: 12 }
+  ]
+  assert.deepEqual(
+    Model.seriesPoints(s, 100, 40, 2, 20, null, 5).map(p => p.x),
+    [2, 26, 50]
+  )
   assert.deepEqual(Model.seriesPoints(s, 100, 40, 2, 10), Model.seriesPoints(s, 100, 40, 2))
   assert.deepEqual(Model.seriesPoints(s, 100, 40, 2, 0), Model.seriesPoints(s, 100, 40, 2))
 })
@@ -494,13 +736,18 @@ test("valueToY: inside the bounds maps like seriesPoints, outside is null", () =
 })
 
 test("tapeItems: valid quotes only, compact form, down flag", () => {
-  const list = [quote("AAPL", 306.87, 305.59), quote("NOPE", null, null, "Not Found"), quote("MSFT", 410.05, 412.10)]
+  const list = [quote("AAPL", 306.87, 305.59), quote("NOPE", null, null, "Not Found"), quote("MSFT", 410.05, 412.1)]
   assert.deepEqual(Model.tapeItems(list, false), [
     { symbol: "AAPL", text: "AAPL 306.87 ▲0.42%", up: true, down: false },
     { symbol: "MSFT", text: "MSFT 410.05 ▼0.50%", up: false, down: true }
   ])
-  assert.deepEqual(Model.tapeItems([quote("FLAT", 10, 10)], false), [{ symbol: "FLAT", text: "FLAT 10.00 •0.00%", up: false, down: false }])
-  assert.deepEqual(Model.tapeItems(list, true).map(i => i.text), ["AAPL ▲0.42%", "MSFT ▼0.50%"])
+  assert.deepEqual(Model.tapeItems([quote("FLAT", 10, 10)], false), [
+    { symbol: "FLAT", text: "FLAT 10.00 •0.00%", up: false, down: false }
+  ])
+  assert.deepEqual(
+    Model.tapeItems(list, true).map(i => i.text),
+    ["AAPL ▲0.42%", "MSFT ▼0.50%"]
+  )
   assert.deepEqual(Model.tapeItems([], false), [])
   assert.deepEqual(Model.tapeItems(null, false), [])
 })
@@ -556,7 +803,7 @@ test("currencyCycle: '' (native) sits before the list and wraps both ways", () =
   assert.equal(Model.currencyCycle("EUR", list, 1), "")
   assert.equal(Model.currencyCycle("", list, -1), "EUR")
   assert.equal(Model.currencyCycle("USD", list, -1), "")
-  assert.equal(Model.currencyCycle("XXX", list, 1), "USD")   // unknown current -> first
+  assert.equal(Model.currencyCycle("XXX", list, 1), "USD") // unknown current -> first
   assert.equal(Model.currencyCycle("", [], 1), "")
 })
 
@@ -569,23 +816,45 @@ test("quoteCurrency: minor units (GBp, ZAc) map to the major code with a factor"
 
 test("ratePairs: one Yahoo FX symbol per distinct quote currency that differs from the display one", () => {
   const list = [quote("AAPL", 1, 1), quote("SAP.DE", 2, 2), quote("VOD.L", 3, 3), quote("BAD", null, null, "Not Found")]
-  list[0].currency = "USD"; list[1].currency = "EUR"; list[2].currency = "GBp"; list[3].currency = "USD"
+  list[0].currency = "USD"
+  list[1].currency = "EUR"
+  list[2].currency = "GBp"
+  list[3].currency = "USD"
   assert.deepEqual(Model.ratePairs(list, "EUR"), ["USDEUR=X", "GBPEUR=X"])
   assert.deepEqual(Model.ratePairs(list, "USD"), ["EURUSD=X", "GBPUSD=X"])
   assert.deepEqual(Model.ratePairs(list, ""), [])
   assert.deepEqual(Model.ratePairs([], "EUR"), [])
 })
 
-const RATE_LINE = JSON.stringify({ chart: { result: [{ meta: { currency: "EUR", symbol: "USDEUR=X", regularMarketPrice: 0.92, chartPreviousClose: 0.91 } }], error: null } })
+const RATE_LINE = JSON.stringify({
+  chart: {
+    result: [{ meta: { currency: "EUR", symbol: "USDEUR=X", regularMarketPrice: 0.92, chartPreviousClose: 0.91 } }],
+    error: null
+  }
+})
 
 test("parseRateLines / rateFor", () => {
   const rates = Model.parseRateLines(RATE_LINE + "\n" + NOT_FOUND_LINE + "\n", ["USDEUR=X", "XXXEUR=X"])
   assert.deepEqual(rates, { "USDEUR=X": 0.92 })
   assert.equal(Model.rateFor("USD", "EUR", rates), 0.92)
   // Yahoo normalizes some pair symbols in meta while keeping request order.
-  const normalized = Model.parseRateLines(JSON.stringify({ chart: { result: [{ meta: {
-    currency: "EUR", symbol: "EUR=X", regularMarketPrice: 0.89
-  } }], error: null } }), ["USDEUR=X"])
+  const normalized = Model.parseRateLines(
+    JSON.stringify({
+      chart: {
+        result: [
+          {
+            meta: {
+              currency: "EUR",
+              symbol: "EUR=X",
+              regularMarketPrice: 0.89
+            }
+          }
+        ],
+        error: null
+      }
+    }),
+    ["USDEUR=X"]
+  )
   assert.deepEqual(normalized, { "USDEUR=X": 0.89 })
   assert.equal(Model.rateFor("EUR", "EUR", rates), 1)
   assert.equal(Model.rateFor("USD", "", rates), 1)
@@ -596,8 +865,16 @@ test("parseRateLines / rateFor", () => {
 
 test("convertQuote: scales money fields and series, keeps percentages, tags the display currency", () => {
   const q = quote("AAPL", 305.59, 305.93)
-  q.currency = "USD"; q.dayLow = 302.94; q.dayHigh = 307.66; q.week52Low = 223.78; q.week52High = 344.57; q.open = 306.21
-  q.series = [{ t: 1, c: 300 }, { t: 2, c: 310 }]
+  q.currency = "USD"
+  q.dayLow = 302.94
+  q.dayHigh = 307.66
+  q.week52Low = 223.78
+  q.week52High = 344.57
+  q.open = 306.21
+  q.series = [
+    { t: 1, c: 300 },
+    { t: 2, c: 310 }
+  ]
   const c = Model.convertQuote(q, "EUR", { "USDEUR=X": 0.5 })
   assert.equal(c.price, 152.795)
   assert.equal(c.prevClose, 152.965)
@@ -606,11 +883,14 @@ test("convertQuote: scales money fields and series, keeps percentages, tags the 
   assert.equal(c.dayLow, 151.47)
   assert.equal(c.week52High, 172.285)
   assert.equal(c.open, 153.105)
-  assert.deepEqual(c.series, [{ t: 1, c: 150 }, { t: 2, c: 155 }])
+  assert.deepEqual(c.series, [
+    { t: 1, c: 150 },
+    { t: 2, c: 155 }
+  ])
   assert.equal(c.currency, "EUR")
   assert.equal(c.nativeCurrency, "USD")
   assert.equal(c.converted, true)
-  assert.equal(q.price, 305.59)                       // original untouched
+  assert.equal(q.price, 305.59) // original untouched
   const same = Model.convertQuote(q, "USD", {})
   assert.equal(same.converted, false)
   assert.equal(same.price, 305.59)

@@ -33,16 +33,20 @@ test("parseState: empty, junk and non-object input fall back to a default watchl
 })
 
 test("normalizeState: repairs missing ids, active list, selection, range and currency", () => {
-  const state = Store.normalizeState({
-    watchlists: [
-      { name: "One", symbols: ["aapl", "AAPL", "msft"] },
-      { id: "two", name: "Two", symbols: ["NVDA"] }
-    ],
-    activeWatchlist: "missing",
-    selectedSymbol: "TSLA",
-    chartRange: "10y",
-    currency: "usd"
-  }, 1000, () => 0.5)
+  const state = Store.normalizeState(
+    {
+      watchlists: [
+        { name: "One", symbols: ["aapl", "AAPL", "msft"] },
+        { id: "two", name: "Two", symbols: ["NVDA"] }
+      ],
+      activeWatchlist: "missing",
+      selectedSymbol: "TSLA",
+      chartRange: "10y",
+      currency: "usd"
+    },
+    1000,
+    () => 0.5
+  )
   assert.equal(state.watchlists.length, 2)
   assert.ok(state.watchlists[0].id)
   assert.deepEqual(state.watchlists[0].symbols, ["AAPL", "MSFT"])
@@ -53,11 +57,15 @@ test("normalizeState: repairs missing ids, active list, selection, range and cur
 })
 
 test("normalizeState: a selected symbol outside the active list is dropped", () => {
-  const state = Store.normalizeState({
-    watchlists: [{ id: "one", name: "One", symbols: ["AAPL"] }],
-    activeWatchlist: "one",
-    selectedSymbol: "NVDA"
-  }, 1000, () => 0.5)
+  const state = Store.normalizeState(
+    {
+      watchlists: [{ id: "one", name: "One", symbols: ["AAPL"] }],
+      activeWatchlist: "one",
+      selectedSymbol: "NVDA"
+    },
+    1000,
+    () => 0.5
+  )
   assert.equal(state.selectedSymbol, "AAPL")
 })
 

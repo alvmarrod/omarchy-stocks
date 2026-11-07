@@ -309,7 +309,7 @@ function nextIndex(current, quotes, step) {
   if (!n) return -1
   var dir = step < 0 ? -1 : 1
   var hasCurrent = typeof current === "number" && current >= 0 && current < n
-  var start = hasCurrent ? current : (dir > 0 ? -1 : 0)
+  var start = hasCurrent ? current : dir > 0 ? -1 : 0
   for (var k = 1; k <= n; k++) {
     var idx = (((start + dir * k) % n) + n) % n
     if (isValid(list[idx])) return idx
@@ -375,7 +375,7 @@ function macdIndicator(series) {
   return {
     value: value,
     signal: signal,
-    action: value > signal ? "Buy" : (value < signal ? "Sell" : "Neutral")
+    action: value > signal ? "Buy" : value < signal ? "Sell" : "Neutral"
   }
 }
 
@@ -404,7 +404,7 @@ function rsiIndicator(series) {
     var relativeStrength = averageGain / averageLoss
     value = 100 - 100 / (1 + relativeStrength)
   }
-  return { value: value, action: value <= 30 ? "Buy" : (value >= 70 ? "Sell" : "Neutral") }
+  return { value: value, action: value <= 30 ? "Buy" : value >= 70 ? "Sell" : "Neutral" }
 }
 
 function longTermIndicators(seriesBySymbol, symbols) {
@@ -462,8 +462,10 @@ function screenRows(stocks, quotes, indicators) {
       price: price,
       ema200: ema200,
       target: target,
-      analystCount: toNumber(stock.analystCount) !== null ? toNumber(stock.analystCount)
-        : Number(stock.buy || 0) + Number(stock.hold || 0) + Number(stock.sell || 0),
+      analystCount:
+        toNumber(stock.analystCount) !== null
+          ? toNumber(stock.analystCount)
+          : Number(stock.buy || 0) + Number(stock.hold || 0) + Number(stock.sell || 0),
       aboveEmaPct: aboveEmaPct,
       emaTrend20dPct: emaTrend20dPct,
       emaTrend5yPct: emaTrend5yPct,
@@ -490,8 +492,7 @@ function screenSortValue(row, key) {
   if (!row) return null
   if (key === "symbol") return String(row.symbol || "")
   if (key === "ema200") return toNumber(row.aboveEmaPct)
-  if (key === "price" || key === "analystCount" || key === "targetUpsidePct")
-    return toNumber(row[key])
+  if (key === "price" || key === "analystCount" || key === "targetUpsidePct") return toNumber(row[key])
   if (key === "macd") return screenActionRank(row.macd && row.macd.action)
   if (key === "rsi") return screenActionRank(row.rsi && row.rsi.action)
   return null
@@ -503,20 +504,27 @@ function sortScreenRows(rows, key, direction) {
   var list = (rows || []).slice()
   if (!key) return list
   var dir = direction < 0 ? -1 : 1
-  return list.map(function(row, index) { return { row: row, index: index } }).sort(function(a, b) {
-    var left = screenSortValue(a.row, key)
-    var right = screenSortValue(b.row, key)
-    var leftMissing = left === null || left === undefined
-    var rightMissing = right === null || right === undefined
-    if (leftMissing || rightMissing) {
-      if (leftMissing && rightMissing) return a.index - b.index
-      return leftMissing ? 1 : -1
-    }
-    var result
-    if (typeof left === "string") result = left < right ? -1 : (left > right ? 1 : 0)
-    else result = left < right ? -1 : (left > right ? 1 : 0)
-    return result === 0 ? a.index - b.index : result * dir
-  }).map(function(entry) { return entry.row })
+  return list
+    .map(function (row, index) {
+      return { row: row, index: index }
+    })
+    .sort(function (a, b) {
+      var left = screenSortValue(a.row, key)
+      var right = screenSortValue(b.row, key)
+      var leftMissing = left === null || left === undefined
+      var rightMissing = right === null || right === undefined
+      if (leftMissing || rightMissing) {
+        if (leftMissing && rightMissing) return a.index - b.index
+        return leftMissing ? 1 : -1
+      }
+      var result
+      if (typeof left === "string") result = left < right ? -1 : left > right ? 1 : 0
+      else result = left < right ? -1 : left > right ? 1 : 0
+      return result === 0 ? a.index - b.index : result * dir
+    })
+    .map(function (entry) {
+      return entry.row
+    })
 }
 
 function priceDecimals(price) {
@@ -667,7 +675,8 @@ function slotFraction(t, series, slots, interval) {
   if (!list.length || slots <= 0) return 0
   var step = toNumber(interval)
   var last = list[list.length - 1].t
-  if (t > last) return step !== null && step > 0 ? ((list.length - 1) + (t - last) / step) / slots : (list.length - 1) / slots
+  if (t > last)
+    return step !== null && step > 0 ? (list.length - 1 + (t - last) / step) / slots : (list.length - 1) / slots
   if (t <= list[0].t) return 0
   for (var i = 1; i < list.length; i++) {
     if (t <= list[i].t) {
@@ -714,7 +723,7 @@ function chartTimeTicks(series, range, endTime, interval) {
   if (range !== "5d") {
     var count = range === "6mo" ? 6 : 4
     for (i = 1; i < count; i++) {
-      var slot = slots * i / count
+      var slot = (slots * i) / count
       var lo = Math.floor(slot)
       var hi = lo + 1 < list.length ? lo + 1 : lo
       var inner = slot - lo
@@ -758,7 +767,7 @@ function tapeItems(quotes, compact) {
 }
 
 function screenSymbolLabel(row) {
-  var symbol = String(row && row.symbol || "")
+  var symbol = String((row && row.symbol) || "")
   var cap = formatMarketCap(row && row.marketCap)
   return symbol + (cap ? "(" + cap + ")" : "")
 }
@@ -833,7 +842,7 @@ function currencyCycle(current, list, step) {
 // Yahoo reports some markets in minor units: London in pence ("GBp"/"GBX"),
 // Johannesburg in cents ("ZAc"), Tel Aviv in agorot ("ILA"). Map those to the
 // major code plus a factor.
-var MINOR_UNITS = { "GBp": "GBP", "GBX": "GBP", "ZAc": "ZAR", "ILA": "ILS" }
+var MINOR_UNITS = { GBp: "GBP", GBX: "GBP", ZAc: "ZAR", ILA: "ILS" }
 
 function quoteCurrency(currency) {
   var raw = trimString(currency)
